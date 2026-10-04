@@ -46,3 +46,49 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# 只读参考材料（不属于本工程交付物，体积大且含构建产物，不入库）：
+#   dashcraft/     —— flutter_scene 官方体素示例，仅作架构与资源参考
+#   mc-sources/    —— 原版参考源码容器，**按版本并列存放**：
+#       mc-sources/minecraft-common-<版本>-sources/（当前为 26.3）
+#       只读参考，禁止修改其内容、禁止入库；获取与放置见 CONTRIBUTING.md
+#   flutter_scene/ —— flutter_scene 仓库本地副本（引擎源码/示例）
+# 末条 minecraft-*/ 是防御网：万一有人又把参考源码 clone 到仓库根，它不会污染 git status，
+# 由 tools/check_repo_hygiene.py 的「迁移未完成」检查负责提醒归位。
+/mc-sources/
+minecraft-*/
+/dashcraft/
+/flutter_scene/
+test_fixtures/
+# F-35 原版材质导入产物（版权：原版贴图不入库，本地生成）：
+/assets/textures/vanilla/*
+!/assets/textures/vanilla/.gitkeep
+/assets/cracks/vanilla/*
+!/assets/cracks/vanilla/.gitkeep
+/tool/.venv-vanilla/
+/build/vanilla_import/
+
+# 构建产物（APK 等）
+dist/
+
+# --- AI 协作配置（见 AI/README.md）---
+# 机器本地的工具私有态：不入库
+.cursor/
+# openspec update 顺带产出的 Copilot 接入点（本项目不使用 Copilot）
+.github/prompts/
+
+# 工具接入点与工具私有态都属于**机器本地状态**，一律不入库
+# （接入方式见 AI/README.md 与 skill ai-workspace-link）：
+# .claude / .qoder / .workbuddy / .dsh 是本机创建的、指向 .agents/ 的目录软链接，
+# 也可以是开发者自己的实体工具目录 —— 两种形态都不入库。
+# 模式**不带尾斜杠**：符号链接不是目录，`/.claude/` 匹配不到它。
+/.claude
+/.qoder
+/.workbuddy
+/.dsh
+
+# 工具自有的忽略/配置文件同理：机器本地状态，不入库。
+# .zcodeignore 由该工具「从 .gitignore 同步」生成，规则真身在 .gitignore，
+# 曾在早期被误提交（2026-09-27 由 remove-web-runner-and-tool-config 移除跟踪）。
+/.zcodeignore
+.zcode
