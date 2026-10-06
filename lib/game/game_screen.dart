@@ -90,9 +90,6 @@ class _GameScreenState extends State<GameScreen> {
   bool _ready = false;
   bool _exiting = false;
 
-  /// 是否已收到服务器权威位姿（登录后必发一次）。
-  bool _hasSpawn = false;
-
   /// 诊断探针开关（`--dart-define=TRACE=true` 才生效）。
   static const bool _trace = bool.fromEnvironment('TRACE');
   double _traceAccum = 0;
@@ -142,9 +139,18 @@ class _GameScreenState extends State<GameScreen> {
           : '[TEX] 图集就绪 spriteCount=${textures.spriteCount} '
               'blocks=${textures.blockCount}');
     }
-    _materials = _SectionMaterials(
-      textures == null ? null : await loadTexture(BlockTextures.atlasAssetPath),
-    );
+    // 贴图失败**不能**让整屏起不来：flutter_scene 的 loadTexture 要求构建钩子先把
+    // 图片"cook"进 flutter_scene_generated/（本仓尚无该钩子，会抛 Bad state）。
+    // 这里吞掉异常并退化为顶点色——贴图是观感增强，不是进世界的必要条件。
+    TextureSource? atlasTexture;
+    if (textures != null) {
+      try {
+        atlasTexture = await loadTexture(BlockTextures.atlasAssetPath);
+      } catch (e) {
+        if (_trace) debugPrint('[TEX] 贴图加载失败，退化为顶点色：$e');
+      }
+    }
+    _materials = _SectionMaterials(atlasTexture);
 
     final skySource = GradientSkySource();
     _skySource = skySource;
@@ -214,7 +220,6 @@ class _GameScreenState extends State<GameScreen> {
         _player.position.setValues(x, y, z);
         // 原版 setDeltaMovement(newValues.deltaMovement())：速度也以服务器下发为准。
         _player.velocity.setValues(dx, dy, dz);
-        _hasSpawn = true;
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
         _player.yaw = (180.0 - yRot) * math.pi / 180.0;
         _player.pitch = xRot * math.pi / 180.0;
@@ -412,11 +417,14 @@ class _GameScreenState extends State<GameScreen> {
     // 0) 摊还网格化（每帧限额，避免地形涌入时卡住输入与渲染）。
     _processDirty();
 
-    // 脚下这一列的区块还没到就**不做物理也不上行**：原版客户端在收到区块前同样
-    // 不动。否则本地重力会在空世界里自由落体，人掉出世界（服务器会刷
-    // "moved too quickly!"），而相机跑到地形下方。
+    // 脚下这一列的区块还没到就**不做物理也不上行**：原版客户端在收到区块前同样不动，
+    // 否则本地重力会在空世界里自由落体、人掉出世界、相机跑到地形下方。
+    //
+    // 注意**不要**再要求"已收到服务器位姿"才动：修掉 EntityPositionSync 误用之后，
+    // 那条路径不再产生位姿事件，而 Paper 并不保证登录后立刻发 PlayerPosition——
+    // 于是玩家永远不动、也不上行（实测：门禁加上它就再无任何上行）。
     final spawnColumn = (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
-    if (!_hasSpawn || !_columns.containsKey(spawnColumn)) {
+    if (!_columns.containsKey(spawnColumn)) {
       _cameraSync();
       return;
     }
@@ -424,6 +432,8 @@ class _GameScreenState extends State<GameScreen> {
     // 0.5) 合成输入（仅调试开关开启时）。
     if (_autoWalk) {
       _autoWalkTime += dt;
+      // 边走边转（螺旋）：只朝一个方向走可能正对墙，位置不变会让人误判"物理没生效"。
+      _player.yaw += 0.9 * dt;
       _input
         ..move.y = 1 // 一直向前
         ..jump = _autoWalkTime % 2.0 < 0.15; // 每 2 秒按一下空格
@@ -452,7 +462,8 @@ class _GameScreenState extends State<GameScreen> {
           'state@feet=${col?.stateAt(bx & 15, by, bz & 15)} '
           'collidable=${world.isCollidable(bx, by, bz)} '
           'collidableBelow=${world.isCollidable(bx, by - 1, bz)} '
-          'dirty=${_dirtyQueue.length - _dirtyCursor}',
+          'dirty=${_dirtyQueue.length - _dirtyCursor} '
+          'yaw=${_player.yaw.toStringAsFixed(2)}',
         );
       }
     }
