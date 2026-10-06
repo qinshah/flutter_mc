@@ -20,10 +20,28 @@ dependencies:
       ref: br_path_provider-v2.1.5_ohos_dev
   # 解除系统刷新率上限。开发期用于观察帧率。
   refresh_rate: 1.0.2
+  # MC 协议层四包（自 fscraft packages 原样搬入）。
+  mc_nbt:
+    path: packages/mc_nbt
+  mc_wire:
+    path: packages/mc_wire
+  mc_session:
+    path: packages/mc_session
+  mc_protocol_v26_2:
+    path: packages/mc_protocol_v26_2
+  # 渲染数据 / 资源抽象 / UI 组件三包骨架（实现见后续 change）。
+  mc_render:
+    path: packages/mc_render
+  mc_resource:
+    path: packages/mc_resource
+  mc_ui:
+    path: packages/mc_ui
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: 6.0.0
+  # tool/extract_assets.dart 用：zip（client jar）读取
+  archive: ^4.0.0
 
 flutter:
   uses-material-design: true
