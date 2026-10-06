@@ -93,6 +93,15 @@ class _GameScreenState extends State<GameScreen> {
   /// 是否已收到服务器权威位姿（登录后必发一次）。
   bool _hasSpawn = false;
 
+  /// 诊断探针开关（`--dart-define=TRACE=true` 才生效）。
+  static const bool _trace = bool.fromEnvironment('TRACE');
+  double _traceAccum = 0;
+
+  /// 上行节流累计。原版每**刻**（20 Hz）上报一次移动，逐帧上报会把服务器的移动
+  /// 校验打乱（实测服务器刷 moved too quickly）；这里按 20 Hz 发。
+  double _uplinkAccum = 0;
+  static const double _uplinkInterval = 1 / 20;
+
   @override
   void initState() {
     super.initState();
@@ -369,18 +378,48 @@ class _GameScreenState extends State<GameScreen> {
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
 
+    if (_trace) {
+      _traceAccum += dt;
+      if (_traceAccum >= 1.0) {
+        _traceAccum = 0;
+        final world = _controller.world;
+        final bx = _player.position.x.floor();
+        final by = _player.position.y.floor();
+        final bz = _player.position.z.floor();
+        final col = _columns[(bx >> 4, bz >> 4)];
+        debugPrint(
+          '[TRACE] pos=(${_player.position.x.toStringAsFixed(1)},'
+          '${_player.position.y.toStringAsFixed(1)},'
+          '${_player.position.z.toStringAsFixed(1)}) '
+          'vy=${_player.velocity.y.toStringAsFixed(1)} '
+          'onGround=${_player.onGround} '
+          'cols=${_columns.length} '
+          'colLoaded=${col != null} '
+          'state@feet=${col?.stateAt(bx & 15, by, bz & 15)} '
+          'collidable=${world.isCollidable(bx, by, bz)} '
+          'collidableBelow=${world.isCollidable(bx, by - 1, bz)} '
+          'dirty=${_dirtyQueue.length - _dirtyCursor}',
+        );
+      }
+    }
+
     // 2) 上行玩家状态（原版角度制：yaw 0 = 朝 +Z；本应用 0 = 朝 -Z）。
-    widget.session.commands.send(
-      CmdUpdatePlayer(
-        x: _player.position.x,
-        y: _player.position.y,
-        z: _player.position.z,
-        yaw: 180.0 - _player.yaw * 180.0 / math.pi,
-        pitch: _player.pitch * 180.0 / math.pi,
-        onGround: _player.onGround,
-        horizontalCollision: false,
-      ),
-    );
+    //    节流到原版的每刻一次；逐帧发会打乱服务器侧的移动校验。
+    _uplinkAccum += dt;
+    if (_uplinkAccum >= _uplinkInterval) {
+      _uplinkAccum = 0;
+      widget.session.commands.send(
+        CmdUpdatePlayer(
+          x: _player.position.x,
+          y: _player.position.y,
+          z: _player.position.z,
+          yaw: 180.0 - _player.yaw * 180.0 / math.pi,
+          pitch: _player.pitch * 180.0 / math.pi,
+          onGround: _player.onGround,
+          horizontalCollision: false,
+        ),
+      );
+    }
 
     // 3) 本帧的鼠标位移是消费型输入，用完即清（按住的键保留）。
     _input.endFrame();
