@@ -1,0 +1,11 @@
+name: mc_wire
+description: "MC 协议传输核心：VarInt、分帧、zlib 帧内压缩、协议阶段状态机骨架、包登记表接口。版本无关、纯 Dart、无 Flutter 依赖。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0
