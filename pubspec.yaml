@@ -36,6 +36,10 @@ dependencies:
     path: packages/mc_resource
   mc_ui:
     path: packages/mc_ui
+  # hook/build.dart 用：Dart 构建钩子 API（flutter_scene 的 buildTextures 等在此
+  # 调用，只在构建期跑）。列在常规依赖里是因为它经 flutter_scene 本就传递进来，
+  # 且 lint depend_on_referenced_packages 对 hook/ 这类非 test/tool 目录只认常规依赖。
+  hooks: ^2.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
