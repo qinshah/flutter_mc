@@ -1,0 +1,10 @@
+name: mc_nbt
+description: "Minecraft NBT 编解码。纯 Dart，无 Flutter 依赖。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.0
+
+dev_dependencies:
+  lints: ^6.0.0
