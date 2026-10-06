@@ -45,6 +45,12 @@ dev_dependencies:
     sdk: flutter
   # tool/extract_assets.dart 用：zip（client jar）读取
   archive: ^4.0.0
+  # tool/extract_assets.dart 图集拼接用
+  image: ^4.0.0
 
 flutter:
   uses-material-design: true
+  # 官方资产提取产物（构建期运行 tool/extract_assets.dart 生成，gitignore 不入库；
+  # 目录以 .gitkeep 保底，缺失时构建仍通过、运行期资产读取降级）
+  assets:
+    - assets/vanilla/26_2/

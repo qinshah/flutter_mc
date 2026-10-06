@@ -98,3 +98,7 @@ dist/
 # 曾在早期被误提交（2026-09-27 由 remove-web-runner-and-tool-config 移除跟踪）。
 /.zcodeignore
 .zcode
+
+# 官方 client jar 提取产物（版权：不入库；工具 tool/extract_assets.dart，按版本并列）
+/assets/vanilla/*
+!/assets/vanilla/.gitkeep

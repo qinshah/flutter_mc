@@ -24,10 +24,13 @@ Minecraft 官方客户端的 Flutter 复刻（纯客户端）：只连既有 MC 
 ```bash
 flutter pub get                        # 根依赖（含 packages/ 全部 path 依赖）
 flutter analyze                        # app 壳静态检查
-cd packages/mc_wire && dart test       # 包内测试（mc_wire / mc_session / mc_protocol_v26_2 有测试）
+cd packages/mc_wire && dart test       # 包内测试（多个包有测试）
 dart analyze                           # 各纯 Dart 包内运行
-dart run tool/extract_assets.dart <client.jar>   # 盘点官方 jar 内 assets/ 资产（只读）
+dart run tool/extract_assets.dart extract "<官方 client.jar>"   # 提取资产+拼图集（构建期一次）
 ```
+
+资产提取：从本机官方启动器 jar（如 `~/Library/Application Support/minecraft/versions/26.2/26.2.jar`）
+提取方块资产到 `assets/vanilla/26_2/`（版本标记目录，gitignore 不入库），运行前执行一次。
 
 ## 流程与文档
 
