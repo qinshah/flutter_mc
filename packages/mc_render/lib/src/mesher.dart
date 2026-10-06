@@ -254,7 +254,13 @@ class _LayerBuilder {
     _vertexCount++;
   }
 
-  /// 绕序 0,1,2 / 0,2,3（**逆时针为正面**）。
+  /// 绕序 2,1,0 / 3,2,0（相对顶点书写顺序即**顺时针**）。
+  ///
+  /// **别被下面注释里的"逆时针"误导**：引擎正面判定看的是**外法线方向**
+  /// （`gl.frontFace(CCW)`，判据见下），而`_corners` 的顶点顺序 + `_mirrorZ`
+  /// 镜像共同决定了实际绕序。已用纯几何实证：对 6 个面 × 4 种索引序算
+  /// `cross(b-a, c-a) · 外法线`，本实现发射的`2,1,0`/`3,2,0` **六面 dot 全为
+  /// +1（正面）**；若改成 `0,1,2`/`0,2,3` 则六面全为 −1（背面，会被剔除）。
   ///
   /// 判据：flutter_scene 0.24 `GeometryBuilder.addTriangle` 的文档——
   /// "Vertices must be specified in Counter-Clockwise (CCW) order around the

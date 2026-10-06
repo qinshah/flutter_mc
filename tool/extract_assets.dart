@@ -175,21 +175,51 @@ void _restitch(Directory outDir) {
 /// colormap 名 → 该colormap 的256 级颜色带（索引 0..255）。
 typedef TintRamp = List<int>;
 
-// biome 着色只对特定材质生效（判据 `BlockColors` 的 tint 索引约定）。
-// 草方块顶面/草类植物走 grass，树叶类走 foliage——按**贴图路径**判定，
-// 因为这是离线构建期唯一拿得到的信息（原版是按 material 在运行时查表）。
-final _grassTintPrefixes = <String>[
-  'block/grass_block_top',
-  'block/short_grass', 'block/tall_grass', 'block/fern', 'block/dead_bush',
-  'block/grass', 'block/seagrass', 'block/tall_seagrass',
+// biome 着色只对特定方块生效 —— **逐条照抄原版 `BlockColors.createDefault()`
+// 的注册表**，不再凭"哪些看起来该是绿的"猜。
+//
+// 判据（`net/minecraft/client/color/block/BlockColors.java`）：
+//   doubleTallGrass → LARGE_FERN, TALL_GRASS
+//   grass            → FERN, SHORT_GRASS, POTTED_FERN, BUSH
+//   grassBlock       → GRASS_BLOCK
+//   constant(-10380959) → SPRUCE_LEAVES        ← 云杉叶用**常量**色调，非 biome 渐变
+//   constant(-8345771)  → BIRCH_LEAVES         ← 桦树叶同理
+//   foliage          → OAK/JUNGLE/ACACIA/DARK_OAK_LEAVES, VINE, MANGROVE_LEAVES
+//   dryFoliage       → LEAF_LITTER
+//   sugarCane        → SUGAR_CANE
+// 其余（cherry/azalea 等）不注册 ⇒ 不着色，保持贴图自带颜色。
+//
+// 键是**贴图路径前缀**：原版按 Block 注册，构建期拿不到方块对象，只能按模型
+// 引用到的贴图路径归类（同一方块的各面贴图名前缀一致，见 models/block/*.json）。
+const _foliageTintPrefixes = <String>[
+  'block/oak_leaves', 'block/jungle_leaves', 'block/acacia_leaves',
+  'block/dark_oak_leaves', 'block/mangrove_leaves',
+  'block/vine', // 判据：与 OAK_LEAVES 同列 foliage
 ];
-final _foliageTintPrefixes = <String>[
-  'block/oak_leaves', 'block/birch_leaves', 'block/spruce_leaves',
-  'block/jungle_leaves', 'block/acacia_leaves', 'block/dark_oak_leaves',
-  'block/mangrove_leaves', 'block/azalea_leaves', 'block flowering_azalea_leaves',
-  'block/cherry_leaves', 'block/pale_oak_leaves',
+const _grassTintPrefixes = <String>[
+  'block/grass_block_top', // 判据：grassBlock()（grass_block.json 的 top）
+  'block/short_grass', 'block/fern',
+  'block/large_fern', 'block/tall_grass', 'block/bush',
 ];
+// 常量色调（原版用固定 ARGB 常量，不随 biome 变）。
+const _constantTintPrefixes = <String, int>{
+  'block/spruce_leaves': 0xFF9C6A4B, // -10380959 ⇒ 0xFF9C6A4B（BGR 存储的补码）
+  'block/birch_leaves': 0xFF80A755, // -8345771
+};
+const _dryFoliageTintPrefixes = <String>['block/leaf_litter'];
 
+// 水：贴图本身是**灰度**（实测 water_still 平均 RGB 176,176,176），蓝调完全来自
+// biome 水色（判据 `BlockTintSources.water()` → `BiomeColors.getAverageWaterColor`
+// → `biome.getWaterColor()`）。该值**不在 colormap 贴图里**（jar 的
+// textures/colormap/ 只有 grass / foliage / dry_foliage），而是 biome 数据 JSON 的
+// `effects.water_color`；统计 jar 内全部 biome：#3f76e4 占 50/65（温带海洋/平原），
+// 是绝对主流色。本切片不实现按 biome 动态取色，固定用该众数色。
+const _waterTintPrefixes = <String>[
+  'block/water_still', 'block/water_flow',
+];
+const _waterTintArgb = 0xFF3F76E4;
+
+/// 贴图 → 应使用的 tint 键（grass / foliage / dry_foliage / 常量名）。
 String? _tintKeyFor(String textureKey) {
   for (final p in _grassTintPrefixes) {
     if (textureKey == p || textureKey.startsWith('$p/')) return 'grass';
@@ -197,12 +227,71 @@ String? _tintKeyFor(String textureKey) {
   for (final p in _foliageTintPrefixes) {
     if (textureKey == p || textureKey.startsWith('$p/')) return 'foliage';
   }
+  for (final p in _dryFoliageTintPrefixes) {
+    if (textureKey == p || textureKey.startsWith('$p/')) return 'dry_foliage';
+  }
+  for (final p in _waterTintPrefixes) {
+    if (textureKey == p || textureKey.startsWith('$p/')) return 'water';
+  }
+  if (_constantTintPrefixes.containsKey(textureKey)) return 'const:$textureKey';
   return null;
 }
 
 bool _isTinted(String textureKey, Map<String, TintRamp> tints) {
   final k = _tintKeyFor(textureKey);
-  return k != null && tints.containsKey(k);
+  if (k == null) return false;
+  if (k.startsWith('const:') || k == 'water') return true; // 不依赖 colormap 资产
+  return tints.containsKey(k);
+}
+
+/// 按 tint 键取色带；`const:` 键返回原版常量色调展开的256 级带。
+///
+/// 云杉/桦树叶用原版固定 ARGB 常量（判据 `BlockColors` 的
+/// `BlockTintSources.constant(-10380959)` / `(-8345771)`）——不随 biome 变，
+/// 故直接把所有灰度级映射到同一色调。
+List<int> _rampFor(String tintKey, Map<String, TintRamp> tints) {
+  if (tintKey == 'water') {
+    return List<int>.filled(256, _waterTintArgb & 0x00FFFFFF);
+  }
+  if (!tintKey.startsWith('const:')) return tints[tintKey]!;
+  final argb = _constantTintPrefixes[tintKey.substring('const:'.length)]!;
+  // 原版 tint 是逐通道乘，故此处每级都是同色（乘法在 _applyTint 里做）。
+  return List<int>.filled(256, argb & 0x00FFFFFF);
+}
+
+/// 逐像素把任意格式/位深归一到 RGBA。
+///
+/// [img.Image.getPixel] 已经把调色板/灰度/bit 深度**解析成RGBA**，故这里只需
+/// 逐像素搬运——不能走 `convert(numChannels: 4)`（见调用处注释：低bit 深度格式的
+/// alpha 会被按该位深解释，4bit 下上限仅 15）。
+img.Image _toRgba(img.Image src) {
+  // **仅 1 通道（灰度）走 convert**：`getPixel` 在 numChannels==1 时只填 r，
+  // g/b 留 0 ⇒ 返回 (v,0,0)，正是"大片红色"的直接来源（实测 grass_block_top
+  // (148,0,0)）。`convert(numChannels: 4)` 会把灰度复制到三通道 ⇒ (148,148,148)。
+  // 灰度图无 alpha 语义，故这条路不受位深影响，安全。
+  if (src.numChannels == 1) {
+    return src.convert(numChannels: 4);
+  }
+  // 其余走下面的手动逐像素。**注意 3 通道图（dirt/sand/oak_log 实测
+  // `Format.uint4` + ch=3）不能走 convert**：它没有 alpha 通道，`getPixel` 的
+  // `p.a` 本应为 255，但 convert 会按 uint4 的位深解释成 0~15 ⇒ 整张图变全透明
+  // （实测 dirt/sand/deepslate/oak_log alpha 全部 0）。
+  // **≥3 通道必须手动逐像素**：`convert(numChannels: 4)` 会把 alpha 按**该格式的
+  // 位深**解释——uint4 格式下 alpha 上限只有 15 ⇒ 整张树叶 alpha 变 0~15（全透明），
+  // 渲染时橡树/桦树叶子彻底消失。实测对照：
+  //   convert(numChannels:4)      → alpha 0~15 （错）
+  //   Image.from(im)             → alpha 0~255（对）
+  //   手动 getPixel/setPixelRgba → alpha 0~255（对）
+  final out = img.Image(width: src.width, height: src.height, numChannels: 4);
+  final noAlpha = src.numChannels == 3; // 无 alpha 通道：getPixel 的 p.a 不可信
+  for (var y = 0; y < src.height; y++) {
+    for (var x = 0; x < src.width; x++) {
+      final p = src.getPixel(x, y);
+      out.setPixelRgba(x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(),
+          noAlpha ? 255 : p.a.toInt());
+    }
+  }
+  return out;
 }
 
 /// 内容是否为灰阶（三通道近似相等）。
@@ -316,11 +405,19 @@ void _stitchAtlas(
       continue;
     }
     // **必须归一到 RGBA**：jar 里的方块贴图有 L（灰度索引）/ P（调色板）/ LA /
-    // 1（位图）等模式，而 `compositeImage` / `setPixel` 是**逐通道**复制的。
-    // 直接把 L 模式的灰度索引当 RGB 复制会让像素变成 (v,0,0) —— 实测
-    // grass_block_top 整张变纯红 (148,0,0)、bedrock 变暗红，这就是"大片红色"的根因。
-    // `convert(numChannels: 4)` 让 P 走调色板展开、L/LA 走灰度→灰度RGB、1 走位图→黑白。
-    var rgba = image.convert(numChannels: 4);
+    // 1（位图）/ uint4（4bit 索引）等模式，而 `compositeImage` / `setPixel` 是
+    // **逐通道**复制的。直接 composite 会把索引值当 RGB 复制 → 像素变成 (v,0,0)，
+    // 实测 grass_block_top 整张变纯红 (148,0,0) —— 这是"大片红色"的根因。
+    //
+    // **不能用 `convert(numChannels: 4)`**：低bit 深度格式（实测 oak_leaves 是
+    // `Format.uint4`，只 5 个调色板项）的 alpha 会被当作该位深下的数值处理，
+    // 4bit 下alpha 上限就是 15 ⇒ 整张树叶 alpha 变成 0~15（全透明），
+    // 渲染时橡树/桦树叶子彻底消失，只剩天空蓝。实测对照：
+    //   convert(numChannels:4) → alpha 0~15（错）
+    //   Image.from(im)        → alpha 0~255（对）
+    //   手动 getPixel/setPixelRgba → alpha 0~255（对）
+    // 故统一走**手动逐像素重建**（getPixel 已按调色板解析出 RGBA）。
+    var rgba = _toRgba(image);
     rgba = rgba.height > 16 ? _firstFrame(rgba, 16) : rgba;
     // L 模式是**索引图**，不是最终颜色：原版用 biome colormap 运行时着色
     // （`ModelBlockRenderer` → `multiplyColor`，色源 `GrassColor/FoliageColor`）。
@@ -330,7 +427,7 @@ void _stitchAtlas(
     // 通道数信息丢失。灰阶检测同时天然排除了自带彩色的 P 模式贴图
     // （oak_leaves/jungle_leaves 的调色板是彩色的，本就不该着色）。
     if (_isTinted(e.key, tints) && _isGrayscale(rgba)) {
-      rgba = _applyTint(rgba, tints[_tintKeyFor(e.key)]!);
+      rgba = _applyTint(rgba, _rampFor(_tintKeyFor(e.key)!, tints));
     }
     frames[e.key] = rgba;
   }

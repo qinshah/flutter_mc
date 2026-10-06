@@ -163,13 +163,28 @@ class BlockTextures {
   /// 原版 `BlockModel` 的键空间：立方体全用 `all`；分面用 `top`/`bottom`/`side`；
   /// 柱状方块（石英、原木端面）用 `end`；十字植物（矮草、花）用 `cross`。
   /// 逐级回退，是为了让各类模型都能取到一张说得过去的贴图。
+  ///
+  /// **`texture` 必须在链里**：`template_seagrass` / `template_kelp` 这类水草模型
+  /// 只声明 `"textures": {"texture": "block/seagrass"}` 一个键（无 all/side/cross），
+  /// 漏掉它会让整片水草回退到兜底矩形（石头）⇒ 渲染成青蓝灰的"冰柱"。
+  /// 查证`models/block/seagrass.json`：parent=template_seagrass、textures.texture。
   static List<String> _keysFor(BlockFace face) => switch (face) {
-        BlockFace.up => const ['top', 'up', 'end', 'all', 'side'],
-        BlockFace.down => const ['bottom', 'down', 'end', 'all', 'side'],
+        BlockFace.up => const ['top', 'up', 'end', 'all', 'side', 'texture'],
+        BlockFace.down => const ['bottom', 'down', 'end', 'all', 'side', 'texture'],
         BlockFace.north ||
         BlockFace.south ||
         BlockFace.east ||
         BlockFace.west =>
-          const ['side', 'cross', 'all', 'end', 'north', 'south', 'east', 'west'],
+          const [
+            'side',
+            'cross',
+            'all',
+            'end',
+            'north',
+            'south',
+            'east',
+            'west',
+            'texture', // 水草/海带/藤蔓类模板的单键
+          ],
       };
 }
