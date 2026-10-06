@@ -8,6 +8,9 @@ import 'package:mc_wire/mc_wire.dart';
 
 import 'remote_chunk.dart';
 
+/// 位置包原始载荷探针（`--dart-define=TRACE_POS=true` 才输出；纯 Dart 用 print）。
+const bool kTracePositions = bool.fromEnvironment('TRACE_POS');
+
 /// 会话事件（会话 → 调用方；调用方在独立 isolate 里驱动 Game/渲染）。
 sealed class SessionEvent {
   const SessionEvent();
@@ -405,17 +408,13 @@ final class RemoteSession {
             rate: overworld.rate,
           ));
         }
-      case final EntityPositionSync e:
-        // 服务器对自身实体的权威同步（宽松回拉：直接置位）
-        _events.add(PositionCorrection(
-          x: e.x,
-          y: e.y,
-          z: e.z,
-          yRot: e.yRot,
-          xRot: e.xRot,
-          teleportId: -1,
-          isTeleport: false,
-        ));
+      case final EntityPositionSync _:
+        // 别的实体的位置同步（1.21.2+ `ClientboundEntityPositionSyncPacket`，首个字段是
+        // **entityId**）。**绝不能当成玩家位姿**——早先误读为"自身实体的权威同步"而直接
+        // 置位，于是附近每一个实体（生物、掉落物…）都会把玩家拽到它所在的位置：实测
+        // 玩家位置在 y=0..107 之间乱跳、服务器狂刷 moved too quickly（4.1 端到端实测）。
+        // 本切片不渲染实体，故忽略；实体跟踪留作后续切片。
+        break;
       case final ViewDistanceUpdate _:
       case null:
         break; // 未登记包（实体/库存/聊天等范围外）：跳过 + 已计数（remote-play spec）
@@ -532,6 +531,12 @@ final class RemoteSession {
       PlayServerbound.acceptTeleportation,
       (ByteWriter()..writeVarInt(pos.teleportId)).takeBytes(),
     );
+
+    if (kTracePositions) {
+      print('[POS] id=${pos.teleportId} flags=${pos.relativeFlags} '
+          'raw=(${pos.x}, ${pos.y}, ${pos.z}, yaw=${pos.yRot}, pitch=${pos.xRot}) '
+          'delta=(${pos.dx}, ${pos.dy}, ${pos.dz}) -> ($nx, $ny, $nz)');
+    }
 
     _events.add(PositionCorrection(
       x: nx,
