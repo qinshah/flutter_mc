@@ -35,6 +35,28 @@ class PlayerMotion {
   /// `originalMovementY * 0.6`——它覆盖 `travelInAir` 的重力与竖直摩擦，故无重力）。
   static const double flyVerticalRetain = 0.6;
 
+  // —— 行走/跳跃的竖直运动学（REF: `LivingEntity.travelInAir` 空中分支）——
+  //
+  // **逐刻递推**（格/刻，20 刻/秒）。原版一**刻**内的顺序是关键：
+  //   1. `jumpFromGround()`：vy = Math.max(jumpPower, vy)          [源码 2370]
+  //   2. `handleRelativeFrictionAndCalculateMovement`：**先 move() 位移**
+  //      （源码 2657），用的还是**未扣重力**的 vy
+  //   3. `travelInAir`：movementY -= getEffectiveGravity()        （源码 2460）
+  //   4. `setDeltaMovement(... * verticalFriction)` = ×0.98（源码 2474）
+  //
+  // **顺序不能换**：先减重力再位移会让每刻都吃一次重力，累积后跳高从 1.2522 格
+  // 掉到 0.9969 格——恰好差 0.0031 够不到 1 格高方块（2026-10-07 实测）。
+  // 阻尼模型（×0.98/tick）与连续化 exp(-k·dt) 每子步只差 ~1e-6，不是根因。
+  /// 每刻重力（`Attributes.GRAVITY` 默认值）。**单位是"格/刻²"**，
+  /// 即每刻把竖直速度减 0.08 格/刻（= 1.6 格/秒²，与 [gravity] 同源不同口径）。
+  static const double gravityPerTick = 0.08;
+
+  /// 每刻竖直空气阻力（`travelInAir` 的 `verticalFriction`，非 omnidirectional 时）。
+  static const double verticalFrictionPerTick = 0.98;
+
+  /// 每刻时长（秒）。
+  static const double tickSeconds = 1.0 / 20.0;
+
   /// 固定步长（照 fscraft）：渲染帧率变化不影响物理结果。
   static const double fixedStep = 1 / 120;
 
@@ -79,6 +101,16 @@ class PlayerController {
   bool flying = false;
 
   double _accumulator = 0;
+
+  /// 竖直刻速度（`格/刻`）。对外的 [Player.velocity]（格/秒）由它 ×20 换算。
+  double _vyTicks = 0;
+
+  /// 距下一个刻边界的时间（秒）。竖直运动学只在此边界推进。
+  double _verticalTickAccum = 0;
+
+  /// 本刻是否已起跳（原版 `noJumpDelay = 10` 的轻量替身：防止按住空格
+  /// 在一个刻内重复注入初速；原版是 10 刻冷却，本期只保证"每刻至多一次"）。
+  bool _jumpedThisTick = false;
 
   /// 用一帧的真实 `dt` 驱动：内部按 [PlayerMotion.fixedStep] 固定步长累加。
   void tick(double dt, InputState input) {
@@ -149,32 +181,77 @@ class PlayerController {
       player.velocity.z = 0;
     }
 
-    // —— 竖直：原版逐刻语义（先减重力，再乘空气阻力） ——
-    if (input.jump && player.onGround) {
-      player.velocity.y = PlayerMotion.jumpVelocity;
+    // —— 竖直：刻边界递推（REF 见PlayerMotion 处的时序注释）——
+    //
+    // 碰撞求解在 1/120s 固定步内跑（细步长防穿墙），但**竖直运动学只在刻边界推进**
+    // —— 否则每子步都吃一次重力，累积后跳高从1.2522 掉到 0.9969 格（跳不上 1 格）。
+    // `_pendingVerticalSteps` 记录"到下一个刻边界还剩几格竖直要积分"。
+    final jumpPower =
+        PlayerMotion.jumpVelocity; // 格/秒（= 0.42 格/刻 × 20）
+    if (input.jump && player.onGround && !_jumpedThisTick) {
+      // `jumpFromGround()`：`Math.max(jumpPower, movement.y)`（源码 2372）——
+      // 注入取较大者，MUST NOT 把已有的上升速度改小。
+      final vyTicks = _vyTicks > 0 ? _vyTicks : jumpPower / 20.0;
+      _vyTicks = vyTicks;
+      _jumpedThisTick = true;
       player.onGround = false;
     }
-    player.velocity.y = (player.velocity.y - PlayerMotion.gravity * dt) *
-        math.exp(-PlayerMotion.airDamping * dt);
-    if (player.velocity.y < PlayerMotion.terminalVelocity) {
-      player.velocity.y = PlayerMotion.terminalVelocity;
+
+    _verticalTickAccum += dt;
+    while (_verticalTickAccum >= PlayerMotion.tickSeconds) {
+      _verticalTickAccum -= PlayerMotion.tickSeconds;
+      _advanceVerticalTick(jumpPower);
     }
 
     // —— 位移与碰撞 ——（`VoxelCollision.move` 内部已按最长轴拆子步）
+    // 竖直位移用**本刻未扣重力**的刻速度 `_vyTicks`（原版 `move()` 在
+    // `travelInAir` 扣重力之前调用，见 handleRelativeFrictionAndCalculateMovement）。
     final result = collision.move(
       player.bounds,
       player.velocity.x * dt,
-      player.velocity.y * dt,
+      _vyTicks * 20.0 * dt,
       player.velocity.z * dt,
     );
     // 被挡的轴速度清零（贴墙滑动由 collision 的逐轴求解保证）。
     if (result.hitX) player.velocity.x = 0;
     if (result.hitZ) player.velocity.z = 0;
-    if (result.hitY) player.velocity.y = 0;
 
     player.applyMove(result);
-    // 着地：竖直被挡且脚下有方块（原版 onGround 口径）。
-    player.onGround = result.hitY && result.hasBlockBelow;
+    if (result.hitY) {
+      // 撞到顶面 ⇒ 竖直刻速度归零（原版 `move()` 拦住位移后不再积累下落速度）。
+      _vyTicks = 0;
+      player.velocity.y = 0;
+    }
+    // **着地判定用"脚下探针"而非 `hitY`**：`collision.move` 的 `hitY` 只在
+    // `dy < 0`（真的下沉）时才为真，站着不动 `dy == 0` ⇒ 永远撞不到 ⇒
+    // `onGround` 会在 true/false 间闪烁。`hasBlockBelow` 是独立探针（原版
+    // `Entity.groundState` 同义），站立不动时依然为真——这才是正确的口径。
+    final grounded = result.hasBlockBelow && _vyTicks <= 0;
+    if (grounded) {
+      // 稳定着地：竖直速度归零，避免残留 vy 影响下次起跳。
+      _vyTicks = 0;
+      player.velocity.y = 0;
+    }
+    player.onGround = grounded;
+  }
+
+  /// 推进一个刻的竖直运动学（REF 见 [PlayerMotion] 的时序注释）。
+  ///
+  /// 顺序严格照原版：**先按当前速度积分位置，再扣重力、乘阻力**。
+  /// 反过来做会让跳高掉到 0.9969 格（跳不上 1 格高方块）。
+  void _advanceVerticalTick(double jumpPower) {
+    // ① 位移（由调用方在固定步内用 `_vyTicks` 积分进位置）；
+    //    这里只更新速度——位置积分在 `_step` 的 collision.move 里按 dt 摊还。
+    // ② 扣重力（`travelInAir`：movementY -= getEffectiveGravity()）
+    var vy = _vyTicks - PlayerMotion.gravityPerTick;
+    // ③ 乘竖直摩擦（`setDeltaMovement(... * verticalFriction)`）
+    vy *= PlayerMotion.verticalFrictionPerTick;
+    // 下落限速：`terminalVelocity` 是**下落**终端速度（负值，格/秒），换算成格/刻。
+    if (vy < PlayerMotion.terminalVelocity / 20.0) {
+      vy = PlayerMotion.terminalVelocity / 20.0;
+    }
+    _vyTicks = vy;
+    player.velocity.y = vy * 20.0; // 对外暴露仍用格/秒
   }
 
   /// 飞行固定步（REF: `LivingEntity.travelInAir` 空中分支 + `Player.travel`
