@@ -7,20 +7,29 @@ import 'package:path_provider/path_provider.dart';
 
 import '../confirm_screen.dart';
 import '../screen.dart';
+import 'join_flow.dart';
 import 'manage_server_screen.dart';
 import 'server_selection_list.dart';
 
 /// gui/screens/multiplayer/JoinMultiplayerScreen.java 的对应：真实服务器列表、
 /// 逐条探测、列表管理入口（添加/编辑/删除/直连）。
-/// 加入服务器与直连的"加入"为占位提示——连接由 join-and-render 接入。
+/// "加入服务器"经版本装配点连接：成功进游戏屏（/game），失败就地 SnackBar。
 class JoinMultiplayerScreen extends StatefulWidget {
-  const JoinMultiplayerScreen({super.key, this.serverList, this.enablePing = true});
+  const JoinMultiplayerScreen({
+    super.key,
+    this.serverList,
+    this.enablePing = true,
+    this.connector,
+  });
 
   /// 注入口（测试用）；缺省取应用文档目录下的游戏目录。
   final ServerList? serverList;
 
   /// 测试用：关闭真实网络探测（保持"正在探测…"确定性状态）。
   final bool enablePing;
+
+  /// 连接注入点（测试替换真实 isolate 会话）；缺省走版本装配点。
+  final JoinConnector? connector;
 
   @override
   State<JoinMultiplayerScreen> createState() => _JoinMultiplayerScreenState();
@@ -144,7 +153,7 @@ class _JoinMultiplayerScreenState extends State<JoinMultiplayerScreen> {
                       child: button(
                         '加入服务器',
                         needsSelection: true,
-                        onPress: _joinPlaceholder,
+                        onPress: _joinSelected,
                       ),
                     ),
                     gap,
@@ -197,13 +206,12 @@ class _JoinMultiplayerScreenState extends State<JoinMultiplayerScreen> {
     );
   }
 
-  void _joinPlaceholder() {
+  Future<void> _joinSelected() async {
     final server = _list![_selected];
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('连接 ${server.ip}（join-and-render 接入）'),
-        duration: const Duration(seconds: 2),
-      ),
+    await joinServer(
+      context,
+      server: server,
+      connector: widget.connector ?? defaultJoinConnector,
     );
   }
 

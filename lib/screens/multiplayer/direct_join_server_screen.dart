@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:mc_session/mc_session.dart';
 import 'package:mc_ui/mc_ui.dart';
 
 import '../screen.dart';
+import 'join_flow.dart';
 
 /// 原版 `DirectJoinServerScreen` 的简化对应：仅地址输入。
-/// "加入"为占位提示（连接由 join-and-render 接入）。
+/// "加入服务器"经版本装配点连接：成功进游戏屏（/game），失败就地 SnackBar。
 class DirectJoinServerScreen extends StatefulWidget {
-  const DirectJoinServerScreen({super.key});
+  const DirectJoinServerScreen({super.key, this.connector});
+
+  /// 连接注入点（测试替换真实 isolate 会话）；缺省走版本装配点。
+  final JoinConnector? connector;
 
   @override
   State<DirectJoinServerScreen> createState() => _DirectJoinServerScreenState();
@@ -14,6 +19,18 @@ class DirectJoinServerScreen extends StatefulWidget {
 
 class _DirectJoinServerScreenState extends State<DirectJoinServerScreen> {
   final _address = TextEditingController();
+
+  /// 直连没有列表条目：按输入地址临时构造一条（协议号用锚点默认值，
+  /// 真正的版本校验在装配点与握手）。
+  Future<void> _join() async {
+    final address = _address.text.trim();
+    if (address.isEmpty) return;
+    await joinServer(
+      context,
+      server: ServerData(name: address, ip: address),
+      connector: widget.connector ?? defaultJoinConnector,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,15 +69,7 @@ class _DirectJoinServerScreenState extends State<DirectJoinServerScreen> {
                   width: 98 * s,
                   height: 20 * s,
                   label: '加入服务器',
-                  onPress: () {
-                    if (_address.text.trim().isEmpty) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('连接 ${_address.text.trim()}（join-and-render 接入）'),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  },
+                  onPress: _join,
                 ),
                 SizedBox(width: 4 * s),
                 MCButton(

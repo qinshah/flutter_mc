@@ -69,8 +69,11 @@ final class CmdClose extends SessionCommand {
 }
 
 /// 会话 isolate 的持有物：命令入口 + 事件流。
+///
+/// 正常路径由 [spawnSession] 产出；构造器公开是为了让**宿主或测试**注入自己的
+/// 会话（例如脚本化事件流），从而不必起真服务器也能覆盖上层接线。
 final class SessionHandle {
-  SessionHandle._(this.commands, this.events);
+  SessionHandle(this.commands, this.events);
 
   final SendPort commands;
   final Stream<SessionEvent> events;
@@ -122,7 +125,7 @@ Future<SessionHandle> spawnSession({
   });
 
   final commands = await ready.future;
-  return SessionHandle._(commands, events.stream);
+  return SessionHandle(commands, events.stream);
 }
 
 class _IsolateConfig {
