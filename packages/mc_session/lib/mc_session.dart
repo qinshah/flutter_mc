@@ -8,7 +8,9 @@ library;
 export 'src/palette.dart';
 export 'src/remote_chunk.dart';
 export 'src/remote_session.dart';
+export 'src/server_address.dart';
 export 'src/server_list.dart';
+export 'src/session_assembly.dart';
 export 'src/session_isolate.dart';
 export 'src/status_probe.dart';
 

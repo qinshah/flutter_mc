@@ -2,8 +2,8 @@
 
 ## 1. mc_session 装配点
 
-- [ ] 1.1 `SessionAssembly`：protocol→实现的注册表 + `connectFor`（未注册版本抛 UnsupportedProtocolError）；RemoteSession 接受装配产物；验证：单测（注册/未注册两分支），`dart test` 全绿
-- [ ] 1.2 mc_session.dart 导出装配点；验证：analyze 零 issue
+- [x] 1.1 `SessionAssembly`：protocol→实现的注册表 + `connectFor`（未注册版本抛 UnsupportedProtocolError）；RemoteSession 接受装配产物；验证：单测（注册/未注册两分支），`dart test` 全绿
+- [x] 1.2 mc_session.dart 导出装配点；验证：analyze 零 issue
 
 ## 2. mc_render 网格器
 
