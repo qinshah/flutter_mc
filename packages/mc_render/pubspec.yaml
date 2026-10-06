@@ -1,0 +1,14 @@
+name: mc_render
+description: "原版渲染数据半边的翻译：模型烘焙与区块编译，产顶点纯数据。纯 Dart，禁引擎依赖。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.3
+
+dependencies:
+  mc_nbt:
+    path: ../mc_nbt
+
+dev_dependencies:
+  lints: ^6.0.0
