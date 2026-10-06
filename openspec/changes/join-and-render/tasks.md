@@ -20,5 +20,5 @@
 
 ## 4. 端到端验收
 
-- [ ] 4.1 起 Paper（java -jar paper-26.2-129.jar nogui），dart MCP driver 入口真连 127.0.0.1：进世界、截屏见地形、走动、跳、昼夜推进；验证：截图 + get_runtime_errors 为零
+- [x] 4.1 起 Paper（java -jar paper-26.2-129.jar nogui），dart MCP driver 入口真连 127.0.0.1：进世界、截屏见地形、走动、跳、昼夜推进；验证：截图 + get_runtime_errors 为零
 - [x] 4.2 全仓回归：8 项 analyze + 全部测试；红线 grep（flutter_scene 仅 lib/）；验证：全绿
