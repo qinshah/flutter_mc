@@ -11,6 +11,11 @@ import 'remote_chunk.dart';
 /// 位置包原始载荷探针（`--dart-define=TRACE_POS=true` 才输出；纯 Dart 用 print）。
 const bool kTracePositions = bool.fromEnvironment('TRACE_POS');
 
+/// 时间包原始字段探针（`--dart-define=TRACE_TIME=true`）：用于判定"昼夜不推进"
+/// 是包没重复到达，还是我们取了不会前进的字段（26.2 的 SetTime 既有 gameTime
+/// 也有各 world clock 的 totalTicks/rate）。
+const bool kTraceTime = bool.fromEnvironment('TRACE_TIME');
+
 /// 会话事件（会话 → 调用方；调用方在独立 isolate 里驱动 Game/渲染）。
 sealed class SessionEvent {
   const SessionEvent();
@@ -193,6 +198,10 @@ final class RemoteSession {
   // 玩家状态（会话侧权威镜像；服务器强制同步时更新）
   double px = 0, py = 0, pz = 0, pyaw = 0, ppitch = 0;
   double _deltaX = 0, _deltaY = 0, _deltaZ = 0;
+
+  /// 最近一次带 clock 表的 SetTime 带来的速率/累计刻（之后的包只带 gameTime）。
+  double _clockRate = 1.0;
+  int _clockTotalTicks = 0;
   bool ponground = true, phorizontalCollision = false;
   bool _playPhase = false;
   bool _closed = false;
@@ -398,16 +407,31 @@ final class RemoteSession {
       case final PlayerPosition pos:
         _handlePosition(pos);
       case final SetTime t:
-        // 服务器时间同步（约每秒一次）：只取主世界 clock（内置 registry
-        // overworld=0，判据 WorldClocks.java 注册顺序）；缺条目就忽略本次。
+        if (kTraceTime) {
+          final o = t.clocks.isEmpty ? null : t.clocks[0];
+          print('[TIME] gameTime=${t.gameTime} clocks=${t.clocks.length} '
+              'totalTicks=${o?.totalTicks} rate=${o?.rate}');
+        }
+        // 服务器时间同步。26.2 的 SetTime 有**两种形态**（4.1 实测）：
+        //   1. 进服时一次：clocks 表非空（含主世界 clock 的 totalTicks/rate，
+        //      内置 registry overworld=0，判据 WorldClocks.java 注册顺序）
+        //   2. 之后每秒一次：**clocks 为空**，只带 gameTime
+        // 早先只在 clock 条目存在时才发 TimeUpdated，于是进服后时间就再也不推进
+        // （实测 198 次采样 gameTime 恒定）。现在**一律以 gameTime 为准**，
+        // clock 条目有则更新缓存的 totalTicks/rate，没有就沿用上次。
         final overworld = t.clocks[0];
         if (overworld != null) {
-          _events.add(TimeUpdated(
-            gameTime: t.gameTime,
-            totalTicks: overworld.totalTicks,
-            rate: overworld.rate,
-          ));
+          _clockRate = overworld.rate;
+          _clockTotalTicks = overworld.totalTicks;
+        } else {
+          // 只带 gameTime 的形态：时间仍在前进，totalTicks 按 gameTime 推进。
+          _clockTotalTicks = t.gameTime;
         }
+        _events.add(TimeUpdated(
+          gameTime: t.gameTime,
+          totalTicks: _clockTotalTicks,
+          rate: _clockRate,
+        ));
       case final EntityPositionSync _:
         // 别的实体的位置同步（1.21.2+ `ClientboundEntityPositionSyncPacket`，首个字段是
         // **entityId**）。**绝不能当成玩家位姿**——早先误读为"自身实体的权威同步"而直接
