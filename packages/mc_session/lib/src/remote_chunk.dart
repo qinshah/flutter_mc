@@ -18,7 +18,23 @@ final class RemoteChunkColumn {
     required this.blockLight,
     required this.heightmapTypes,
     required this.heightmapData,
+    this.minSectionY = kOverworldMinSectionY,
   });
+
+  /// overworld 的最低段号：世界底 y = −64（26.x 世界高 384 = −64..320）。
+  static const int kOverworldMinSectionY = -4;
+
+  /// 本列最低段的段号（`sectionY`）。**段号是世界坐标 y 的函数**：
+  /// `sectionY = (worldY >> 4)`，而世界底不一定是 0——overworld 从 −64 起。
+  ///
+  /// 这是 4.1 端到端实测挖出来的坑：漏了它会让段索引整体偏 64 格，
+  /// 客户端"站在幻影地面上"，与服务器权威位置持续背离（服务器狂刷
+  /// `moved too quickly`）。非 overworld 维度（下界/末地 minY=0）需要按
+  /// 维度类型传值，本切片只支持 overworld。
+  final int minSectionY;
+
+  /// 本列最低段的方块 y（世界坐标）。
+  int get minY => minSectionY * 16;
 
   final int x;
   final int z;
@@ -37,8 +53,11 @@ final class RemoteChunkColumn {
   final List<Uint8List> heightmapData;
 
   /// 取方块状态（世界坐标；chunk 内局部坐标）。
+  ///
+  /// `worldY` 是**世界坐标**（可为负：overworld 从 −64 起），段索引要减
+  /// [minSectionY]；段内局部 y 用 `& 15`（对负数同样成立）。
   int stateAt(int localX, int worldY, int localZ) {
-    final sectionIdx = worldY >> 4;
+    final sectionIdx = (worldY >> 4) - minSectionY;
     if (sectionIdx < 0 || sectionIdx >= sections.length) return 0;
     final localY = worldY & 15;
     return sections[sectionIdx][(localY << 8) | (localZ << 4) | localX];
@@ -68,7 +87,7 @@ final class RemoteChunkColumn {
   }
 
   bool _setLocal(int lx, int worldY, int lz, int stateId) {
-    final sectionIdx = worldY >> 4;
+    final sectionIdx = (worldY >> 4) - minSectionY;
     if (sectionIdx < 0 || sectionIdx >= sections.length) return false;
     final idx = ((worldY & 15) << 8) | (lz << 4) | lx;
     if (sections[sectionIdx][idx] == stateId) return false;
@@ -79,9 +98,15 @@ final class RemoteChunkColumn {
 
 /// chunk 包 → [RemoteChunkColumn] 的解调色板摄入（design D2；tasks 5.3）。
 final class ChunkIngestor {
-  ChunkIngestor({this.sectionCount = 24}); // 26.x 默认世界高 384（-64..320）
+  ChunkIngestor({
+    this.sectionCount = 24, // 26.x 默认世界高 384（-64..320）
+    this.minSectionY = RemoteChunkColumn.kOverworldMinSectionY,
+  });
 
   final int sectionCount;
+
+  /// 本维度最低段号（overworld −4）；见 [RemoteChunkColumn.minSectionY]。
+  final int minSectionY;
 
   RemoteChunkColumn ingest(LevelChunkWithLight packet) {
     final blockDecoder = PalettedContainerDecoder(entryCount: 4096, maxIndirectBits: 8);
@@ -111,6 +136,7 @@ final class ChunkIngestor {
     return RemoteChunkColumn(
       x: packet.x,
       z: packet.z,
+      minSectionY: minSectionY,
       sections: sections,
       skyLight: sky,
       blockLight: block,

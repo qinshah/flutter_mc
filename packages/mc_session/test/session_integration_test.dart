@@ -84,8 +84,11 @@ void main() {
         await mock.expectPacket(PlayServerbound.movePlayerPosRot);
 
         // 13) 方块更新（服务器权威回显）
+        //     y 取 −60：本 mock 的 chunk 只发 **1 个段**，而 overworld 世界从 y=−64
+        //     起（见 RemoteChunkColumn.minSectionY），故第 0 段覆盖 −64..−49。
+        //     早先用 y=5——那是"世界从 0 起"的旧假设，段索引会越界。
         mock.send(PlayClientbound.blockUpdate, (w) {
-          w.writeLong(McBlockPos(5, 5, 9).packLong());
+          w.writeLong(McBlockPos(5, -60, 9).packLong());
           w.writeVarInt(1);
         });
 
@@ -121,7 +124,7 @@ void main() {
     final blocks = events.whereType<BlockChanged>().toList();
     expect(blocks, hasLength(1));
     expect(blocks.single.pos.x, 5);
-    expect(blocks.single.pos.y, 5);
+    expect(blocks.single.pos.y, -60);
     expect(blocks.single.stateId, 1);
 
     expect(events.whereType<SessionClosed>().single.reason, contains('Bye'));

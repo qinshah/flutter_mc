@@ -15,8 +15,13 @@ class SessionCollisionWorld implements CollisionWorld {
 
   final Map<(int, int), RemoteChunkColumn> _columns;
 
-  /// 世界高度：26.x 默认 384（24 段 × 16），与 `ChunkIngestor` 的段数一致。
-  static const int kWorldHeight = 384;
+  /// 世界竖直范围：26.x overworld 从 −64 起、高 384（= −64..320）。
+  ///
+  /// **必须写成世界坐标**：早先把下界当 0 用，等于把整个世界往上抬了 64 格
+  /// （见 `RemoteChunkColumn.minSectionY`）。`worldHeight` 供底层求解判"顶上没东西"。
+  static const int kMinY = -64;
+  static const int kMaxY = 320;
+  static const int kWorldHeight = kMaxY;
 
   static const BlockSemanticsV262 _semantics = BlockSemanticsV262();
 
@@ -28,7 +33,7 @@ class SessionCollisionWorld implements CollisionWorld {
 
   @override
   bool isCollidable(int bx, int by, int bz) {
-    if (by < 0 || by >= kWorldHeight) return false;
+    if (by < kMinY || by >= kMaxY) return false;
     final column = _columns[(bx >> 4, bz >> 4)];
     if (column == null) return false; // 未加载：不阻挡
     return _semantics.isCollidable(column.stateAt(bx & 15, by, bz & 15));
