@@ -18,7 +18,8 @@ class DirectJoinServerScreen extends StatefulWidget {
 }
 
 class _DirectJoinServerScreenState extends State<DirectJoinServerScreen> {
-  final _address = TextEditingController();
+  // 默认本机 Paper（实测常用入口）。
+  final _address = TextEditingController(text: '127.0.0.1:25565');
 
   /// 直连没有列表条目：按输入地址临时构造一条（协议号用锚点默认值，
   /// 真正的版本校验在装配点与握手）。

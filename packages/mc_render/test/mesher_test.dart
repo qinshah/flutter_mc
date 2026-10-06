@@ -35,7 +35,7 @@ void main() {
     // 明暗：东面 0.6。
     expect(opaque.colors[0], closeTo(0.6, 1e-6));
     // 绕序：逆时针为正面（flutter_scene 0.24 约定），前三索引 0,1,2。
-    expect(opaque.indices.sublist(0, 3), [0, 1, 2]);
+    expect(opaque.indices.sublist(0, 3), [2, 1, 0]); // z 镜像后须反向发射（0.24 CCW 正面，实证见 normals 通道 A/B）
     // bounds 覆盖整块（z 镜像：-1..0）。
     expect(opaque.bounds, [0, 0, -1, 1, 1, 0]);
   });

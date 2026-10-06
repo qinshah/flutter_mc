@@ -268,12 +268,12 @@ class _LayerBuilder {
       _indices = _resizeU(_indices, _indices.length * 2);
     }
     final i = _indexCount;
-    _indices[i] = base;
+    _indices[i] = base + 2;
     _indices[i + 1] = base + 1;
-    _indices[i + 2] = base + 2;
-    _indices[i + 3] = base;
+    _indices[i + 2] = base;
+    _indices[i + 3] = base + 3;
     _indices[i + 4] = base + 2;
-    _indices[i + 5] = base + 3;
+    _indices[i + 5] = base;
     _indexCount += 6;
   }
 

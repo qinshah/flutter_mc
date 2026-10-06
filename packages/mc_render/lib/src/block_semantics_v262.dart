@@ -36,6 +36,22 @@ class BlockSemanticsV262 implements MeshSemantics {
   static bool _isCutoutName(String name) =>
       name.contains('leaves') || name == 'glass' || name.endsWith('_glass');
 
+  /// 薄皮/贴地方块（26.2 新增一批）：leaf_litter、petals、carpet 等。
+  /// 原版是贴地薄片；首版按十字面片渲染（已知简化：形态应为贴地薄片），
+  /// 关键是**不遮挡邻居、不按实心立方体画**——否则会渲染成大色块实心体
+  /// 并把相邻方块面错误剔除（2026-10-07 实测：leaf_litter 红色大板+穿帮）。
+  static bool _isFlatGroundCover(String name) =>
+      name == 'leaf_litter' ||
+      name == 'pink_petals' ||
+      name == 'wildflowers' ||
+      name == 'bush' ||
+      name == 'firefly_bush' ||
+      name == 'short_dry_grass' ||
+      name == 'tall_dry_grass' ||
+      name.endsWith('_carpet') ||
+      name.endsWith('_petals') ||
+      name.endsWith('_bush');
+
   /// 身份串 → 方块名（去命名空间与属性）：`minecraft:grass_block[snowy=true]`
   /// → `grass_block`。
   static String blockNameOf(int stateId) {
@@ -53,12 +69,17 @@ class BlockSemanticsV262 implements MeshSemantics {
   int layerIndexOf(int stateId) {
     final name = blockNameOf(stateId);
     if (_isTranslucentName(name)) return 2;
-    if (_isCrossName(name) || _isCutoutName(name)) return 1;
+    if (_isCrossName(name) || _isCutoutName(name) || _isFlatGroundCover(name)) {
+      return 1;
+    }
     return 0;
   }
 
   @override
-  bool isCross(int stateId) => _isCrossName(blockNameOf(stateId));
+  bool isCross(int stateId) {
+    final name = blockNameOf(stateId);
+    return _isCrossName(name) || _isFlatGroundCover(name);
+  }
 
   @override
   bool hidesNeighbors(int stateId) {
@@ -66,16 +87,19 @@ class BlockSemanticsV262 implements MeshSemantics {
     final name = blockNameOf(stateId);
     return !_isTranslucentName(name) &&
         !_isCutoutName(name) &&
-        !_isCrossName(name);
+        !_isCrossName(name) &&
+        !_isFlatGroundCover(name);
   }
 
   @override
   String nameOf(int stateId) => blockNameOf(stateId);
 
-  /// 物理：是否可碰撞（非空气/液体/十字植物；叶与玻璃可碰撞——照原版）。
+  /// 物理：是否可碰撞（非空气/液体/十字植物/薄皮；叶与玻璃可碰撞——照原版）。
   bool isCollidable(int stateId) {
     if (stateId == 0) return false;
     final name = blockNameOf(stateId);
-    return !_isTranslucentName(name) && !_isCrossName(name);
+    return !_isTranslucentName(name) &&
+        !_isCrossName(name) &&
+        !_isFlatGroundCover(name);
   }
 }

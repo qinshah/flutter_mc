@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_scene/scene.dart';
@@ -196,7 +197,12 @@ class _GameScreenState extends State<GameScreen> {
   // —— 输入（Flutter 输入是本项目三处自由设计之一；键位照原版 KeyMapping） ——
 
   void _onKey(KeyEvent event) {
-    if (KeyMap.update(_pressed, event)) KeyMap.apply(_pressed, _input);
+    if (KeyMap.update(_pressed, event)) {
+      KeyMap.apply(_pressed, _input);
+      if (_trace && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
+        debugPrint('[KEY] space down（onGround=${_input.jump}）');
+      }
+    }
   }
 
   // —— 会话事件 → 场景 ——
@@ -393,6 +399,10 @@ class _GameScreenState extends State<GameScreen> {
 
     final materials = _materials!;
     addLayer(mesh.opaque, materials.opaque);
+    if (_renderDebug == 'normals') {
+      // v14 表面通道调试：把所有材质换成 worldNormal 输出，直读正面/背面。
+      _scene.debug.view = const DebugView(channel: SurfaceDebugChannel.worldNormal);
+    }
     if (_renderDebug != 'opaque') {
       addLayer(mesh.cutout, materials.cutout);
       addLayer(mesh.translucent, materials.translucent);
@@ -568,7 +578,39 @@ class _GameScreenState extends State<GameScreen> {
         focusNode: _focus,
         autofocus: true,
         onKeyEvent: _onKey,
-        child: SceneView(_scene, camera: _camera, onTick: _onTick),
+        child: Stack(
+          children: [
+            SceneView(_scene, camera: _camera, onTick: _onTick),
+            // driver 调试后门（debug 构建）：无键盘注入手段时驱动跳跃/移动，
+            // 验证物理链路；入口不进发行形态之外的场景。
+            if (kDebugMode)
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Column(
+                  children: [
+                    for (final (label, set_) in [
+                      ('跳', () => _input.jump = true),
+                      ('前', () => _input.move.y = 1),
+                      ('后', () => _input.move.y = -1),
+                      ('左', () => _input.move.x = -1),
+                      ('右', () => _input.move.x = 1),
+                    ])
+                      Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: ElevatedButton(
+                          onPressed: () {
+                            set_();
+                            // 下一帧 endFrame 会清 move；jump 由 onGround 门控自然复位。
+                          },
+                          child: Text(label),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
