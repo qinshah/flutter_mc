@@ -34,8 +34,8 @@ void main() {
     expect(opaque.normals.sublist(0, 3), [1.0, 0.0, 0.0]);
     // 明暗：东面 0.6。
     expect(opaque.colors[0], closeTo(0.6, 1e-6));
-    // 绕序反向：前三索引 2,1,0。
-    expect(opaque.indices.sublist(0, 3), [2, 1, 0]);
+    // 绕序：逆时针为正面（flutter_scene 0.24 约定），前三索引 0,1,2。
+    expect(opaque.indices.sublist(0, 3), [0, 1, 2]);
     // bounds 覆盖整块（z 镜像：-1..0）。
     expect(opaque.bounds, [0, 0, -1, 1, 1, 0]);
   });

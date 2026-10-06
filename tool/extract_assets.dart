@@ -145,21 +145,34 @@ void _stitchAtlas(Directory outDir, Map<String, Uint8List> textures) {
   }
 
   final names = frames.keys.toList()..sort();
-  var atlasW = 256;
+  // 宽度选择：在 2 的幂候选里取「宽 + 高」最小者，并列时取更接近正方形者。
+  //
+  // **不能"能装下就停"**：从 256 起第一个装得下的宽度会把高度撑得极大——
+  // 1227 张 16px 贴图在 256 宽只需约 1232 行，而高度要取 2 的幂 → 2048，
+  // 于是图集 65% 是空黑（4.1 实拍：mipmap 降级被黑区污染 + 纹理内存浪费）。
+  // 本批数据下 512 宽 → 1024 高（宽+高 2304 → 1536，比例 1:8 → 1:2）。
   var placed = <String, Rect>{};
   var rowsUsed = 0;
-  while (true) {
-    final result = _packRows(names, atlasW);
-    if (result != null) {
+  var atlasW = 0;
+  var bestSum = 1 << 30;
+  var bestDelta = 1 << 30;
+  for (var candidate = 256; candidate <= 4096; candidate *= 2) {
+    final result = _packRows(names, candidate);
+    if (result == null) continue;
+    final height = _pow2(result.$1 * 16);
+    final sum = candidate + height;
+    final delta = (candidate - height).abs();
+    if (sum < bestSum || (sum == bestSum && delta < bestDelta)) {
+      bestSum = sum;
+      bestDelta = delta;
+      atlasW = candidate;
       placed = result.$2;
       rowsUsed = result.$1;
-      break;
     }
-    if (atlasW >= 4096) {
-      stderr.writeln('错误: 图集放不下（宽超 4096）');
-      exit(74);
-    }
-    atlasW *= 2;
+  }
+  if (atlasW == 0) {
+    stderr.writeln('错误: 图集放不下（宽超 4096）');
+    exit(74);
   }
   final atlasH = _pow2(rowsUsed * 16);
 

@@ -254,18 +254,26 @@ class _LayerBuilder {
     _vertexCount++;
   }
 
-  /// 绕序 2,1,0 / 3,2,0（反向发射——flutter_scene 顺时针为正面，见文件头）。
+  /// 绕序 0,1,2 / 0,2,3（**逆时针为正面**）。
+  ///
+  /// 判据：flutter_scene 0.24 `GeometryBuilder.addTriangle` 的文档——
+  /// "Vertices must be specified in Counter-Clockwise (CCW) order around the
+  /// outward-facing normal, matching the glTF and engine front-face convention"。
+  ///
+  /// 早先按 fscraft（flutter_scene **0.23**）的"顺时针为正面"额外反向发射成
+  /// 2,1,0 / 3,2,0；但 z 镜像本身已经翻转过一次绕序，再反一次等于没反——
+  /// 实拍表现就是方块面反向（near face 被剔除、看到的是背面/内壁）。
   void addQuadIndices(int base) {
     if (_indexCount + 6 > _indices.length) {
       _indices = _resizeU(_indices, _indices.length * 2);
     }
     final i = _indexCount;
-    _indices[i] = base + 2;
+    _indices[i] = base;
     _indices[i + 1] = base + 1;
-    _indices[i + 2] = base;
-    _indices[i + 3] = base + 3;
+    _indices[i + 2] = base + 2;
+    _indices[i + 3] = base;
     _indices[i + 4] = base + 2;
-    _indices[i + 5] = base;
+    _indices[i + 5] = base + 3;
     _indexCount += 6;
   }
 
