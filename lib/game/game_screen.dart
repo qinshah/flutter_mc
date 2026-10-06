@@ -115,6 +115,10 @@ class _GameScreenState extends State<GameScreen> {
   static const bool _autoWalk = bool.fromEnvironment('AUTOWALK');
   double _autoWalkTime = 0;
 
+  /// 渲染二分开关（`--dart-define=RENDER_DEBUG=opaque`）：只挂 opaque 层。
+  /// 用于判定"部分方块面渲染成深红"是**某一层材质**的问题还是贴图采样本身。
+  static const String _renderDebug = String.fromEnvironment('RENDER_DEBUG');
+
   @override
   void initState() {
     super.initState();
@@ -389,8 +393,10 @@ class _GameScreenState extends State<GameScreen> {
 
     final materials = _materials!;
     addLayer(mesh.opaque, materials.opaque);
-    addLayer(mesh.cutout, materials.cutout);
-    addLayer(mesh.translucent, materials.translucent);
+    if (_renderDebug != 'opaque') {
+      addLayer(mesh.cutout, materials.cutout);
+      addLayer(mesh.translucent, materials.translucent);
+    }
 
     return Node(
       name: 'section',
