@@ -236,8 +236,11 @@ void main() {
 
     final atlas = BlockAtlas.parse(real.readAsStringSync());
     expect(atlas, isNotNull, reason: '真实清单必须可解析');
-    expect(atlas!.width, 256);
-    expect(atlas.height, 2048);
+    // 图集尺寸由 tool/extract_assets.dart 的打包策略决定（"宽+高最小、并列取
+    // 更接近正方形"）：1227 张 16px 贴图 → 512×1024。
+    // 早先是"能装下就停"的 256×2048（65% 空黑，mipmap 降级被黑区污染）。
+    expect(atlas!.width, 512);
+    expect(atlas.height, 1024);
     expect(atlas.spriteCount, greaterThan(1000));
     // block/stone 的 x/y 取决于拼接顺序（按名排序，不以 stone 开头），只校验尺寸。
     final stone = atlas.sprite('block/stone')!;
