@@ -8,7 +8,7 @@
 
 ### Requirement: 菜单页面链路
 
-应用 SHALL 提供三条路由：`/`（标题屏）、`/multiplayer`（多人游戏）、`/settings/video`（视频设置）。标题屏 SHALL 可进入多人游戏与视频设置；多人游戏的"返回"与视频设置的"完成" SHALL 回到标题屏。路由唯一事实来源是 `lib/routes.dart`。
+应用 SHALL 提供路由：`/`（标题屏）、`/multiplayer`（多人游戏）、`/settings/video`（视频设置）、`/game`（游玩屏，join-and-render 接入）。标题屏 SHALL 可进入多人游戏与视频设置；多人游戏的"返回"与视频设置的"完成" SHALL 回到标题屏。加入服务器/直接连接的"加入" SHALL 以装配点建立会话并在成功后进入游玩屏，失败 SHALL 回多人游戏屏并显示可操作错误。路由唯一事实来源是 `lib/routes.dart`。
 
 #### Scenario: 冷启动进标题屏
 
