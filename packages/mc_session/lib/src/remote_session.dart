@@ -53,6 +53,9 @@ final class PositionCorrection extends SessionEvent {
     required this.xRot,
     required this.teleportId,
     required this.isTeleport,
+    this.dx = 0,
+    this.dy = 0,
+    this.dz = 0,
   });
 
   final double x;
@@ -62,6 +65,12 @@ final class PositionCorrection extends SessionEvent {
   final double xRot;
   final int teleportId;
   final bool isTeleport;
+
+  /// 服务器下发的速度增量（原版 `PositionMoveRotation.deltaMovement`，
+  /// 相对位 DELTA_X/Y/Z 已解成绝对值）。玩家速度以此为准（原版 setDeltaMovement）。
+  final double dx;
+  final double dy;
+  final double dz;
 }
 
 /// 会话因服务器断开/错误而结束。
@@ -180,6 +189,7 @@ final class RemoteSession {
 
   // 玩家状态（会话侧权威镜像；服务器强制同步时更新）
   double px = 0, py = 0, pz = 0, pyaw = 0, ppitch = 0;
+  double _deltaX = 0, _deltaY = 0, _deltaZ = 0;
   bool ponground = true, phorizontalCollision = false;
   bool _playPhase = false;
   bool _closed = false;
@@ -482,32 +492,47 @@ final class RemoteSession {
   }
 
   void _handlePosition(PlayerPosition pos) {
-    // 相对标志（Relative 枚举位）：X=0,Y=1,Z=2,Y_ROT=3,X_ROT=4,DELTA_X=5..
+    // 相对标志（Relative 枚举位，判据 worlds/../entity/Relative.java）：
+    // X=0,Y=1,Z=2,Y_ROT=3,X_ROT=4,DELTA_X=5,DELTA_Y=6,DELTA_Z=7,ROTATE_DELTA=8
     bool rel(int bit) {
       final longIdx = bit >> 6;
       if (longIdx >= pos.relativeFlags.length) return false;
       return (pos.relativeFlags[longIdx] >> (bit & 63)) & 1 == 1;
     }
 
-    final isTeleport = pos.teleportId >= 0;
+    // 原版 PositionMoveRotation.calculateAbsolute：相对位表示"在**客户端当前值**上加"。
     final nx = rel(0) ? px + pos.x : pos.x;
     final ny = rel(1) ? py + pos.y : pos.y;
     final nz = rel(2) ? pz + pos.z : pos.z;
     final nyaw = rel(3) ? pyaw + pos.yRot : pos.yRot;
-    final npitch = rel(4) ? ppitch + pos.xRot : pos.xRot;
-    if (isTeleport) {
-      px = nx;
-      py = ny;
-      pz = nz;
-      pyaw = nyaw;
-      ppitch = npitch;
-      // 必须确认传送（ServerboundAcceptTeleportationPacket）
-      _conn!.sendRaw(
-        ProtocolPhase.play,
-        PlayServerbound.acceptTeleportation,
-        (ByteWriter()..writeVarInt(pos.teleportId)).takeBytes(),
-      );
-    }
+    final npitch = (rel(4) ? ppitch + pos.xRot : pos.xRot).clamp(-90.0, 90.0);
+    // 速度增量（DELTA_X/Y/Z）：原版一并下发，客户端 setDeltaMovement。
+    final ndx = rel(5) ? _deltaX + pos.dx : pos.dx;
+    final ndy = rel(6) ? _deltaY + pos.dy : pos.dy;
+    final ndz = rel(7) ? _deltaZ + pos.dz : pos.dz;
+
+    // **无条件**应用（原版 handleMovePlayer 对非乘客玩家总是 setValuesFromPositionPacket）。
+    px = nx;
+    py = ny;
+    pz = nz;
+    pyaw = nyaw;
+    ppitch = npitch;
+    _deltaX = ndx;
+    _deltaY = ndy;
+    _deltaZ = ndz;
+
+    // **无条件**确认（原版：this.connection.send(new ServerboundAcceptTeleportationPacket(packet.id()))）。
+    //
+    // 这是 4.1 端到端实测挖出的坑：早先只在 teleportId >= 0 时 ack，而服务器会用
+    // teleportId = -1 下发**位置同步**包（不是传送）；不 ack 它就一直重发——实测每刻
+    // 一条（约 22/s，100 秒 2203 条），并把客户端反复拉回服务器权威位置，表现为
+    // 客户端位置狂跳、服务器日志刷 moved too quickly。
+    _conn!.sendRaw(
+      ProtocolPhase.play,
+      PlayServerbound.acceptTeleportation,
+      (ByteWriter()..writeVarInt(pos.teleportId)).takeBytes(),
+    );
+
     _events.add(PositionCorrection(
       x: nx,
       y: ny,
@@ -515,7 +540,10 @@ final class RemoteSession {
       yRot: nyaw,
       xRot: npitch,
       teleportId: pos.teleportId,
-      isTeleport: isTeleport,
+      isTeleport: pos.teleportId >= 0,
+      dx: ndx,
+      dy: ndy,
+      dz: ndz,
     ));
   }
 

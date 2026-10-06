@@ -102,6 +102,9 @@ class _GameScreenState extends State<GameScreen> {
   double _uplinkAccum = 0;
   static const double _uplinkInterval = 1 / 20;
 
+  /// 探针用：上行计数（每 20 次打一行）。
+  int _sendTraceCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -177,10 +180,26 @@ class _GameScreenState extends State<GameScreen> {
         // 进服成功；玩家位姿等随后的 PositionCorrection（原版登录后必发一次）。
         break;
 
-      case PositionCorrection(:final x, :final y, :final z, :final yRot, :final xRot):
+      case PositionCorrection(
+          :final x,
+          :final y,
+          :final z,
+          :final yRot,
+          :final xRot,
+          :final teleportId,
+          :final isTeleport,
+          :final dx,
+          :final dy,
+          :final dz
+        ):
+        if (_trace) {
+          debugPrint('[CORR] ($x, $y, $z) teleportId=$teleportId '
+              'isTeleport=$isTeleport');
+        }
         // 服务器权威位姿（相对标志已在会话侧解成绝对值）；直接采信并清速度。
         _player.position.setValues(x, y, z);
-        _player.velocity.setZero();
+        // 原版 setDeltaMovement(newValues.deltaMovement())：速度也以服务器下发为准。
+        _player.velocity.setValues(dx, dy, dz);
         _hasSpawn = true;
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
         _player.yaw = (180.0 - yRot) * math.pi / 180.0;
@@ -408,6 +427,15 @@ class _GameScreenState extends State<GameScreen> {
     _uplinkAccum += dt;
     if (_uplinkAccum >= _uplinkInterval) {
       _uplinkAccum = 0;
+      if (_trace) {
+        // 每 20 次（≈每秒一次）打一次上行值，便于与 [CORR] 对照。
+        _sendTraceCount++;
+        if (_sendTraceCount % 20 == 0) {
+          debugPrint('[SEND] (${_player.position.x}, ${_player.position.y}, '
+              '${_player.position.z}) onGround=${_player.onGround} '
+              'vy=${_player.velocity.y}');
+        }
+      }
       widget.session.commands.send(
         CmdUpdatePlayer(
           x: _player.position.x,
