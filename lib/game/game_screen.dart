@@ -105,6 +105,11 @@ class _GameScreenState extends State<GameScreen> {
   /// 探针用：上行计数（每 20 次打一行）。
   int _sendTraceCount = 0;
 
+  /// 合成输入（`--dart-define=AUTOWALK=true`）：端到端取证用——驱动 tap 模拟不了
+  /// 键盘，所以由调试开关直接注入"一直向前走 + 每 2 秒跳一下"。默认关，不参与发行。
+  static const bool _autoWalk = bool.fromEnvironment('AUTOWALK');
+  double _autoWalkTime = 0;
+
   @override
   void initState() {
     super.initState();
@@ -128,6 +133,13 @@ class _GameScreenState extends State<GameScreen> {
     // 几何 / 材质 / 天空都只能在静态资源就绪后构造（早建出来的会静默不渲染）。
     final textures = await BlockTextures.load();
     _blockTextures = textures;
+    if (_trace) {
+      // 贴图链路取证：null 表示资源包/图集没读到（会退化成纯顶点色）。
+      debugPrint(textures == null
+          ? '[TEX] 图集缺失：BlockTextures.load() 返回 null（退化为顶点色）'
+          : '[TEX] 图集就绪 spriteCount=${textures.spriteCount} '
+              'blocks=${textures.blockCount}');
+    }
     _materials = _SectionMaterials(
       textures == null ? null : await loadTexture(BlockTextures.atlasAssetPath),
     );
@@ -392,6 +404,14 @@ class _GameScreenState extends State<GameScreen> {
     if (!_hasSpawn || !_columns.containsKey(spawnColumn)) {
       _cameraSync();
       return;
+    }
+
+    // 0.5) 合成输入（仅调试开关开启时）。
+    if (_autoWalk) {
+      _autoWalkTime += dt;
+      _input
+        ..move.y = 1 // 一直向前
+        ..jump = _autoWalkTime % 2.0 < 0.15; // 每 2 秒按一下空格
     }
 
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。

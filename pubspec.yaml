@@ -51,6 +51,16 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   # 官方资产提取产物（构建期运行 tool/extract_assets.dart 生成，gitignore 不入库；
-  # 目录以 .gitkeep 保底，缺失时构建仍通过、运行期资产读取降级）
+  # 缺失时构建仍通过、运行期资产读取降级为顶点色）。
+  #
+  # **必须逐个子目录声明**：Flutter 的目录资产声明只收该目录下的**直接文件**，
+  # 不递归子目录——早先只写 `assets/vanilla/26_2/` 时，打进包的只有 .gitkeep，
+  # 于是图集永远读不到（4.1 端到端实测）。
+  #
+  # 运行时只需要这三样：预拼图集（generated/）、方块状态与模型（blockstates/、
+  # models/block/，mc_resource 用来把 state 映射到贴图路径，再查图集取 UV）。
+  # **不带 textures/block/**：1269 张逐张贴图只是提取器的输入，图集里已有像素。
   assets:
-    - assets/vanilla/26_2/
+    - assets/vanilla/26_2/generated/
+    - assets/vanilla/26_2/blockstates/
+    - assets/vanilla/26_2/models/block/
