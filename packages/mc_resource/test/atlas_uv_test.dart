@@ -245,8 +245,9 @@ void main() {
     // block/stone 的 x/y 取决于拼接顺序（按名排序，不以 stone 开头），只校验尺寸。
     final stone = atlas.sprite('block/stone')!;
     expect([stone.width, stone.height], [16, 16]);
-    expect(stone.maxU - stone.minU, 16 / 256);
-    expect(stone.maxV - stone.minV, 16 / 2048);
+    // 贴图占 UV 的比例 = 16 / 图集边长（宽度改了，这两个值随之变）。
+    expect(stone.maxU - stone.minU, 16 / atlas.width);
+    expect(stone.maxV - stone.minV, 16 / atlas.height);
     for (final path in atlas.texturePaths) {
       final s = atlas.sprite(path)!;
       expect(s.x >= 0 && s.y >= 0 && s.x + s.width <= atlas.width &&
