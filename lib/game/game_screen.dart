@@ -133,6 +133,8 @@ class _GameScreenState extends State<GameScreen> {
     // 几何 / 材质 / 天空都只能在静态资源就绪后构造（早建出来的会静默不渲染）。
     final textures = await BlockTextures.load();
     _blockTextures = textures;
+    // 贴图是**按需**解析的：解析出一个新方块后，已用兜底 UV 网格化的段要重做。
+    textures?.onResolved = _markAllSectionsDirty;
     if (_trace) {
       // 贴图链路取证：null 表示资源包/图集没读到（会退化成纯顶点色）。
       debugPrint(textures == null
@@ -259,6 +261,19 @@ class _GameScreenState extends State<GameScreen> {
       if (neighbor == null) continue;
       for (var sy = 0; sy < neighbor.sections.length; sy++) {
         _markDirty(neighbor.x, sy, neighbor.z);
+      }
+    }
+  }
+
+  /// 把所有已加载段标脏（贴图增量解析完成时调用）。
+  ///
+  /// 脏队列按"段"去重，所以连续解析出多个方块时不会把队列撑大；重做由每帧预算
+  /// [_meshBudgetPerFrame] 摊还。代价是最早重做的那批段可能仍用着"当时已解析到"的
+  /// 贴图——解析通常几秒内收敛，可接受。
+  void _markAllSectionsDirty() {
+    for (final column in _columns.values) {
+      for (var sy = 0; sy < column.sections.length; sy++) {
+        _markDirty(column.x, sy, column.z);
       }
     }
   }

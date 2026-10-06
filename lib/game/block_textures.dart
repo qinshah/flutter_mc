@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -13,9 +14,16 @@ import 'package:mc_resource/mc_resource.dart';
 /// 而 `BlockModels.resolve` 是**异步**的（要读 blockstates + model JSON）。所以启动期
 /// 把「方块名 → 面键 → 贴图路径」解析一次，运行期只做同步查表 + 图集取矩形。
 ///
-/// 已知代价（首版）：启动期对身份表里出现的**全部**方块名各解析一次（约千次），
-/// 在桌面端是可接受的几秒；更好的做法是像 fscraft 那样在构建期把面→tile 表生成好
-/// （见后续 change），届时这里退化成纯查表。
+/// **按需增量解析**（不是启动期全量）：启动只读图集；`uvFor` 遇到没解析过的方块名时
+/// 立刻返回兜底 UV，并在后台解析它的模型，解析完成后经 [onResolved] 通知调用方把
+/// 已网格化的段标脏重做。
+///
+/// 为什么不能启动期全量：身份表里有上千个方块名，每个要读 1–4 个资产（约 3000 次
+/// rootBundle 读取，且在主 isolate）——实测 >2 分钟仍未完成，把进游戏屏整个阻塞住。
+/// 按需解析只需覆盖当前视野里真正出现的几十到几百种方块。
+///
+/// 更好的终局是像 fscraft 那样在构建期生成「方块 → 面 → 图集 tile」表（见后续
+/// change），届时这里退化成纯查表，还能省掉打包 blockstates/models。
 class BlockTextures {
   BlockTextures._(this._atlas, this._byBlock, this._fallback);
 
@@ -26,6 +34,15 @@ class BlockTextures {
   /// 图集 PNG 的资产路径（材质用整图 + UV 采样，不做逐贴图材质）。
   static const String atlasAssetPath =
       'assets/vanilla/$assetVersion/generated/block_atlas.png';
+
+  /// 按需解析用（来自资源包的模型读取器）。
+  late final BlockModels _models;
+
+  /// 正在后台解析的方块名（去重）。
+  final Set<String> _pending = {};
+
+  /// 有新的方块纹理解析完成时的回调：调用方据此把已网格化的段标脏重做 UV。
+  void Function()? onResolved;
 
   final BlockAtlas _atlas;
 
@@ -53,27 +70,36 @@ class BlockTextures {
     final atlas = await BlockAtlas.load(source);
     if (atlas == null) return null;
 
-    // BlockModels 要的是 VanillaPack（版本 + 来源），BlockAtlas 只要来源。
-    final models = BlockModels(
-      VanillaPack(version: assetVersion, source: source),
-    );
-    final byBlock = <String, Map<String, String>>{};
-    final names = <String>{
-      for (final id in kBlockStateIdentity262.keys)
-        BlockSemanticsV262.blockNameOf(id),
-    };
-    for (final name in names) {
-      final resolved = await models.resolve('minecraft:$name');
-      if (resolved != null) byBlock[name] = resolved;
-    }
-
     // 兜底取石头（原版"缺失贴图"是紫黑格；我们没有那张贴图，取石头最不刺眼）。
     final stone = atlas.sprite('block/stone');
     final fallback = stone == null
         ? const UvRect(0, 0, 1, 1)
         : UvRect(stone.minU, stone.minV, stone.maxU, stone.maxV);
 
-    return BlockTextures._(atlas, byBlock, fallback);
+    final textures = BlockTextures._(
+      atlas,
+      <String, Map<String, String>>{},
+      fallback,
+    );
+    // BlockModels 要的是 VanillaPack（版本 + 来源），BlockAtlas 只要来源。
+    textures._models = BlockModels(
+      VanillaPack(version: assetVersion, source: source),
+    );
+    return textures;
+  }
+
+  /// 后台解析一个方块名的模型（去重；完成后通知调用方重做 UV）。
+  void _requestResolve(String name) {
+    if (!_pending.add(name)) return;
+    unawaited(_models.resolve('minecraft:$name').then((resolved) {
+      _pending.remove(name);
+      if (resolved == null) return;
+      _byBlock[name] = resolved;
+      _byState.clear(); // 让 stateId → 面键表 重查
+      onResolved?.call();
+    }).catchError((Object _) {
+      _pending.remove(name);
+    }));
   }
 
   /// Flutter 资产读取（`PackSource` 契约：缺失返回 null，不抛）。
@@ -89,10 +115,13 @@ class BlockTextures {
 
   /// 网格器注入点。**永不返回 null**（网格器签名非空），未知方块/缺贴图时兜底。
   UvRect uvFor(int stateId, BlockFace face) {
-    final byKey = _byState.putIfAbsent(
-      stateId,
-      () => _byBlock[BlockSemanticsV262.blockNameOf(stateId)],
-    );
+    final name = BlockSemanticsV262.blockNameOf(stateId);
+    final byKey = _byState.putIfAbsent(stateId, () {
+      final known = _byBlock[name];
+      // 没解析过：立刻返回兜底，并把它排进后台解析（完成后 onResolved 通知重做）。
+      if (known == null) _requestResolve(name);
+      return known;
+    });
     if (byKey != null) {
       for (final key in _keysFor(face)) {
         final path = byKey[key];
