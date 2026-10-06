@@ -240,6 +240,12 @@ class PlayerController {
     player.onGround = result.hitY && result.hasBlockBelow;
   }
 
+  /// 双击窗口剩余秒数（只读诊断视图；原版 `jumpTriggerTime` 剩余刻数 ÷ 20）。
+  double get jumpTriggerSeconds => _jumpTriggerSeconds;
+
+  /// 上一固定步结束时是否按住跳跃（只读诊断视图）。
+  bool get wasJumping => _wasJumping;
+
   /// 飞行速度（`格/刻`；与 [Player.velocity]的 `格/秒` 分开承载）。
   final Vector3 _flyVelocity = Vector3.zero();
   double _flyAccumTicks = 0;

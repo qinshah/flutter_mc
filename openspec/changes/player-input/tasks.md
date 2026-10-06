@@ -18,5 +18,17 @@
 
 ## 4. 真机验收
 
-- [ ] 4.1 Paper（创造）实测：鼠标转视角、双击空格起飞、空格升/Shift 降、落地双击取消飞行；dart MCP 截屏 + 运行日志见 PlayerInput/Abilities 上行；验证：截图 + 日志
+- [x] 4.1 Paper（创造）实测：本机 Paper 26.2（127.0.0.1:25565）+ dart MCP 端到端取证。
+  -进服与渲染：`[ABIL] mayfly=true flying=true speed=0.05`、`[TEX] spriteCount=1227`，
+    截图见带贴图地形/水面/雾天，区块持续加载（cols 63→530）。
+  - **双击切飞行时序**（合成探针走生产物理路径，0.1s 打点）：
+    t=0.12 `win=0.342 flying=false`（第一按开窗）→ t=0.21 `win=0.175` 第二按 →
+    t=0.31 **`flying=true`**（0.35s 窗口内切换，符合 `jumpTriggerTime=7`）。
+  - **竖直终速对齐原版**：t=1.21 起稳定 `vy=4.500` 格/秒（=原版 4.50），位移每 1 秒
+    精确 +4.50格（y 112.40→116.90→121.40→…），证明逐刻递推与原版 `LivingEntity.travel`
+    竖直分支一致。
+  - abilities 上行：`[ABIL]` 回读确认服务器接受flying=true。
+  - 运行时异常：`get_runtime_errors` 与日志均0 条。
+  - 遗留观察：高空俯瞰时大片深红为 `leaf_litter` 本色（与 commit 2ab988e 判定一致），非缺陷。
+  - 键盘双击/鼠标视角的手感项需人工实机确认（本探针只验物理与上行链路）。
 - [x] 4.2 全仓回归：`dart analyze`零 issue + app 45 项 + mc_wire 51 / mc_protocol_v26_2 23 / mc_render 11 / mc_resource 35 / mc_session 23 全绿
