@@ -488,6 +488,7 @@ class _GameScreenState extends State<GameScreen> {
           'collidableBelow=${world.isCollidable(bx, by - 1, bz)} '
           'dirty=${_dirtyQueue.length - _dirtyCursor} '
           'yaw=${_player.yaw.toStringAsFixed(2)} '
+          '看=${_lookBlockName()} '
           'gameTime=${_sky.gameTime} day=${_sky.dayFraction.toStringAsFixed(3)} '
           'sunElev=${_sky.sunElevation.toStringAsFixed(2)}',
         );
@@ -526,6 +527,26 @@ class _GameScreenState extends State<GameScreen> {
 
     // 4) 相机跟随。
     _cameraSync();
+  }
+
+  /// 调试射线：沿视线步进找第一个实体方块，返回「坐标 stateId 方块名」。
+  ///
+  /// 用于判定"画面里的红色是新结构的方块本色，还是贴图/材质缺陷"——直接看命中的
+  /// 是哪种方块名即可（天然红色方块 vs 石头/泥土这类普通方块）。
+  String _lookBlockName() {
+    final world = SessionCollisionWorld(_columns);
+    final eye = _player.eyePosition;
+    final dir = _player.lookDirection;
+    for (var t = 0.5; t < 24.0; t += 0.25) {
+      final bx = (eye.x + dir.x * t).floor();
+      final by = (eye.y + dir.y * t).floor();
+      final bz = (eye.z + dir.z * t).floor();
+      final state = world.stateAtBlock(bx, by, bz);
+      if (state == null || state == 0) continue;
+      if (!world.isCollidable(bx, by, bz)) continue;
+      return '($bx,$by,$bz)#$state:${BlockSemanticsV262.blockNameOf(state)}';
+    }
+    return '无命中';
   }
 
   /// 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。

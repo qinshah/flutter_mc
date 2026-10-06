@@ -31,6 +31,14 @@ class SessionCollisionWorld implements CollisionWorld {
   @override
   bool isColumnLoaded(int cx, int cz) => _columns.containsKey((cx, cz));
 
+  /// 该格的方块状态号（未加载/越界返回 null）。供调试射线用。
+  int? stateAtBlock(int bx, int by, int bz) {
+    if (by < kMinY || by >= kMaxY) return null;
+    final column = _columns[(bx >> 4, bz >> 4)];
+    if (column == null) return null;
+    return column.stateAt(bx & 15, by, bz & 15);
+  }
+
   @override
   bool isCollidable(int bx, int by, int bz) {
     if (by < kMinY || by >= kMaxY) return false;
