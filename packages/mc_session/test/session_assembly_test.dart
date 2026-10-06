@@ -41,13 +41,28 @@ void main() {
       );
     });
 
-    test('connectFor：未注册版本在建会话阶段即拒绝，不发网络连接', () async {
+    test('connectFor：未注册版本在 spawn isolate 之前同步拒绝', () {
       final server = ServerData(name: '旧版服务器', ip: '127.0.0.1:25565', protocol: 340);
 
-      await expectLater(
-        SessionAssembly.connectFor(server, playerName: 'flutter_mc'),
+      expect(
+        () => SessionAssembly.connectFor(server, playerName: 'flutter_mc'),
         throwsA(isA<UnsupportedProtocolError>()),
       );
+    });
+
+    test('connectFor：注册版本起 worker isolate 会话，连接失败经事件流回传', () async {
+      final protocol = SessionAssembly.registeredProtocols.single;
+      // 端口 1 无服务 → 连接失败折叠为 SessionClosed（不抛、不悬挂）。
+      final server = ServerData(name: '空端口', ip: '127.0.0.1:1', protocol: protocol);
+
+      final handle = await SessionAssembly.connectFor(
+        server,
+        playerName: 'flutter_mc',
+      );
+      addTearDown(handle.close);
+      expect(handle.commands, isNotNull);
+
+      expect(await handle.events.first, isA<SessionClosed>());
     });
   });
 

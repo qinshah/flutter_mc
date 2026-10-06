@@ -3,8 +3,10 @@
 ## Decisions
 
 - **D1 装配点**：mc_session 内 `SessionAssembly.connectFor(ServerData, …)`——按 protocol 查注册表取协议实现；26.2 已注册，其余版本抛 `UnsupportedProtocolError`。会话代码保持不按版本分支。
-  - 注册表实际形态：`Map<int, RemoteSessionFactory>`（`RemoteSessionFactory` = 建会话的函数类型）；26.2 的工厂即 `RemoteSession.new`——编解码层的多态（工厂体换成各自会话实现）在第二个协议版本落地时上收，本版不过早抽象。
-  - `connectFor` 取 `ServerData.ip`（`host[:port]`）与 `ServerData.protocol`（status 探测回写）；未注册版本在**发起网络连接之前**即拒绝。
+  - 注册表形态：`Map<int, SessionProtocol>`。`SessionProtocol`（**装配点适配，无原版对应物**）持该版本的实测 protocolId，并提供两个入口：`createSession`（同 isolate、不连接；纯 Dart 宿主与单测）与 `spawn`（worker isolate、spawn 即连接；app 壳）。
+  - **会话进程口径**：app 壳走 `connectFor(ServerData, …) → Future<SessionHandle>`，即 worker isolate 会话（沿既有 D3 与 `session_isolate.dart`）——协议解析与网格化不占主线程。句柄只暴露"命令 SendPort + 事件流"，业务代码看不见协议号。
+  - `connectFor` 取 `ServerData.ip`（`host[:port]`）与 `ServerData.protocol`（status 探测回写）。未注册版本**同步**抛 `UnsupportedProtocolError`（在 spawn isolate / 发起网络连接之前；同步而非失败 Future，免得配置错误被未 await 的 Future 吞掉）。
+  - `connectFor` **不等"进服成功"**：返回句柄后由调用方订阅事件流——`JoinedGame` 即推进，`SessionClosed` 即报错（D6 据此接线）。
   - 地址解析落 `ServerAddress`（原版对应物 `client.multiplayer.resolver.ServerAddress`，Guava `HostAndPort` 语义：缺省端口 25565、IPv6 方括号、失败回落 `server.invalid:25565`）；标注简化点：无 `IDN.toASCII` 转码。
   - `ServerAddress` 是 mc_session 的新公开类型（任务原文只提"注册表 + connectFor"，地址解析是其前置契约），同时供多人屏加入路径复用，消除 `lib/` 里已有的 host/port 重复解析。
 - **D2 mc_render 网格器**：移植 fscraft `mesher`（630 行，原版语义：整块立方体 + 面剔除 + 逐面 UV），适配两处数据源：方块状态来自 mc_session 区块调色板，贴图 UV 来自 mc_resource（BlockModels→atlas 矩形）。产出纯数据（顶点/UV/索引），golden 测试锁形状。简化点标注：无 AO/平滑光照/非常规形状（半砖/楼梯按整块渲染）。
