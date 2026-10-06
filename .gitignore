@@ -33,6 +33,12 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# 官方 client jar 资源提取产物（版权：不入库；工具 tool/extract_assets.dart，见 AGENTS.md）
+/build/extracted_assets/
+
+# 库包不提交锁文件（根应用包的 pubspec.lock 除外，见 pub 约定）
+packages/*/pubspec.lock
+
 # Symbolication related
 app.*.symbols
 
