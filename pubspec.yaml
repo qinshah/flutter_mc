@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_scene: 0.23.0
+  flutter_scene: 0.24.0
   # 3D 数学库（向量、四元数、矩阵、Ray 等），flutter_scene 反复使用。
   vector_math: 2.4.2
   # 应用文档目录（存档与缓存目录定位）。开始适配鸿蒙
