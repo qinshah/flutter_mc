@@ -4,7 +4,7 @@
 
 定义官方资产的构建期提取与读取契约：从用户本机官方 client jar 提取方块资产到版本标记目录（不入库），mc_resource 以版本键、可插拔来源读取，并提供方块模型到贴图路径的解析；为未来"应用内按版本下载 jar"预留来源扩展位。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 构建期提取到版本标记目录
 
