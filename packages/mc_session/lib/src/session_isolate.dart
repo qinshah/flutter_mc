@@ -63,6 +63,33 @@ final class CmdSwing extends SessionCommand {
   final int hand;
 }
 
+/// 飞行切换上报（本地双击预测 → 服务器采信）。
+final class CmdAbilities extends SessionCommand {
+  const CmdAbilities({required this.flying});
+  final bool flying;
+}
+
+/// 输入标志上报（isolate 内由 lastSentInput 去重）。
+final class CmdInputFlags extends SessionCommand {
+  const CmdInputFlags({
+    required this.forward,
+    required this.backward,
+    required this.left,
+    required this.right,
+    required this.jump,
+    required this.shift,
+    required this.sprint,
+  });
+
+  final bool forward;
+  final bool backward;
+  final bool left;
+  final bool right;
+  final bool jump;
+  final bool shift;
+  final bool sprint;
+}
+
 /// 关闭会话。
 final class CmdClose extends SessionCommand {
   const CmdClose();
@@ -81,6 +108,30 @@ final class SessionHandle {
   void close() {
     commands.send(const CmdClose());
   }
+
+  /// 飞行切换上报。
+  void sendAbilities({required bool flying}) =>
+      commands.send(CmdAbilities(flying: flying));
+
+  /// 输入标志上报（isolate 内去重，可每 tick 调用）。
+  void sendInputFlags({
+    required bool forward,
+    required bool backward,
+    required bool left,
+    required bool right,
+    required bool jump,
+    required bool shift,
+    required bool sprint,
+  }) =>
+      commands.send(CmdInputFlags(
+        forward: forward,
+        backward: backward,
+        left: left,
+        right: right,
+        jump: jump,
+        shift: shift,
+        sprint: sprint,
+      ));
 }
 
 /// 在独立 isolate 里起一个 [RemoteSession]。
@@ -172,6 +223,18 @@ Future<void> _entry(_IsolateConfig config) async {
         session.sendPlace(McBlockPos(c.x, c.y, c.z), c.direction, cursor: c.cursor);
       case final CmdSwing c:
         session.sendSwing(hand: c.hand);
+      case final CmdAbilities c:
+        session.sendAbilities(flying: c.flying);
+      case final CmdInputFlags c:
+        session.sendInputFlagsIfChanged(
+          forward: c.forward,
+          backward: c.backward,
+          left: c.left,
+          right: c.right,
+          jump: c.jump,
+          shift: c.shift,
+          sprint: c.sprint,
+        );
       case CmdClose():
         session.close();
     }

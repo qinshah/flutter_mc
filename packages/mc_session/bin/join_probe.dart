@@ -99,6 +99,8 @@ Future<void> main(List<String> args) async {
         break; // 服务器时间同步（约每秒一次），探针不消费
       case SectionChanged():
         break; // 段批量更新（水面/流体 tick），探针不消费
+      case AbilitiesUpdated():
+        break;
       case SessionClosed():
         stdout.writeln('[probe] closed: ${event.reason} (chunks=$chunks blocks=$blocks)');
         done.complete();

@@ -89,6 +89,9 @@ class _GameScreenState extends State<GameScreen> {
 
   /// 输入与物理（3.2）：按键状态 → `InputState` → `PlayerController` → 上行。
   final InputState _input = InputState();
+
+  /// 服务器权威 abilities 快照（AbilitiesUpdated 事件驱动；player-input 切片）。
+  final _abilities = AbilitiesSnapshot();
   final Set<LogicalKeyboardKey> _pressed = {};
   final FocusNode _focus = FocusNode();
   late final PlayerController _controller;
@@ -126,6 +129,8 @@ class _GameScreenState extends State<GameScreen> {
     _controller = PlayerController(
       world: SessionCollisionWorld(_columns),
       player: _player,
+      abilities: _abilities,
+      onFlyingToggled: (flying) => widget.session.sendAbilities(flying: flying),
     );
     _camera = PerspectiveCamera(
       position: vm.Vector3(0, 0, 0),
@@ -216,6 +221,15 @@ class _GameScreenState extends State<GameScreen> {
         // 进服成功；玩家位姿等随后的 PositionCorrection（原版登录后必发一次）。
         break;
 
+      case AbilitiesUpdated(
+          :final mayfly,
+          :final flying,
+          :final flyingSpeed
+        ):
+        _abilities
+          ..mayfly = mayfly
+          ..flyingSpeed = flyingSpeed;
+        debugPrint('[ABIL] mayfly=$mayfly flying=$flying speed=$flyingSpeed');
       case PositionCorrection(
           :final x,
           :final y,
@@ -476,6 +490,17 @@ class _GameScreenState extends State<GameScreen> {
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
 
+    // 1.5) 输入标志上行（isolate 内 lastSentInput 去重；player-input 切片）。
+    widget.session.sendInputFlags(
+      forward: _input.move.y > 0,
+      backward: _input.move.y < 0,
+      left: _input.move.x < 0,
+      right: _input.move.x > 0,
+      jump: _input.jump,
+      shift: _input.sneak,
+      sprint: _input.sprint,
+    );
+
     if (_trace) {
       _traceAccum += dt;
       if (_traceAccum >= 1.0) {
@@ -578,6 +603,11 @@ class _GameScreenState extends State<GameScreen> {
         focusNode: _focus,
         autofocus: true,
         onKeyEvent: _onKey,
+        child: Listener(
+        onPointerMove: (event) {
+          // 全屏指针→视角（fscraft 口径；pointer-lock 另行切片）。
+          _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
+        },
         child: Stack(
           children: [
             SceneView(_scene, camera: _camera, onTick: _onTick),
@@ -611,6 +641,7 @@ class _GameScreenState extends State<GameScreen> {
               ),
           ],
         ),
+      ),
       ),
     );
   }

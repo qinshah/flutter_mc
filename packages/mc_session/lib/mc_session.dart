@@ -16,4 +16,4 @@ export 'src/status_probe.dart';
 
 // 事件流公开面里的版本包类型：JoinedGame.login 的类型是 26.2 包的 GameLogin，
 // 调用方（lib/）只经本包接触它（隔离红线）——再导出而不是让调用方 import 版本包。
-export 'package:mc_protocol_v26_2/mc_protocol_v26_2.dart' show GameLogin;
+export 'package:mc_protocol_v26_2/mc_protocol_v26_2.dart' show GameLogin, PlayerAbilitiesIn;

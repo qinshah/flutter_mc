@@ -27,6 +27,14 @@ class PlayerMotion {
   static const double sprintSpeed = 5.612;
   static const double sneakSpeed = 1.295;
 
+  /// 创造飞行·水平摩擦（REF: `LivingEntity.travelInAir` 空中分支：
+  /// `blockFriction = 1.0` × `airDrag = 0.91`）。
+  static const double flyFriction = 0.91;
+
+  /// 创造飞行·竖直速度保留系数（REF: `Player.travel` 飞行分支的
+  /// `originalMovementY * 0.6`——它覆盖 `travelInAir` 的重力与竖直摩擦，故无重力）。
+  static const double flyVerticalRetain = 0.6;
+
   /// 固定步长（照 fscraft）：渲染帧率变化不影响物理结果。
   static const double fixedStep = 1 / 120;
 
@@ -49,11 +57,26 @@ class PlayerController {
     required this.world,
     required this.player,
     VoxelCollision? collision,
+    this.abilities,
+    this.onFlyingToggled,
   }) : collision = collision ?? VoxelCollision(world);
 
   final CollisionWorld world;
   final Player player;
   final VoxelCollision collision;
+
+  /// 服务器权威 abilities（mayfly/flyingSpeed）；null=未知（按不可飞处理）。
+  final AbilitiesSnapshot? abilities;
+
+  /// 双击空格切换飞行后回调（app 壳 → session.sendAbilities 上报）。
+  final void Function(bool flying)? onFlyingToggled;
+
+  // —— 双击空格窗口（REF: LocalPlayer.aiStep：jumpTriggerTime=7 刻 = 0.35s）——
+  bool _wasJumping = false;
+  double _jumpTriggerSeconds = 0;
+
+  /// 创造飞行（本地意图；可行性以 [abilities] 的 mayfly 为准）。
+  bool flying = false;
 
   double _accumulator = 0;
 
@@ -79,6 +102,32 @@ class PlayerController {
 
   /// 一个固定步长的物理推进。
   void _step(double dt, InputState input) {
+    // —— 双击空格切飞行（REF: LocalPlayer.aiStep，jumpTriggerTime=7 刻）——
+    final mayfly = abilities?.mayfly ?? false;
+    if (mayfly) {
+      if (!_wasJumping && input.jump) {
+        if (_jumpTriggerSeconds <= 0) {
+          _jumpTriggerSeconds = 0.35;
+        } else {
+          flying = !flying;
+          onFlyingToggled?.call(flying);
+          if (flying && player.onGround) {
+            // 原版 `jumpFromGround()`：注入 0.42 格/刻，随后同样被 `Player.travel`
+            // 的 ×0.6 收尾——直接写 player.velocity 会被下一步覆盖，故加在刻速度上。
+            _flyVelocity.y += PlayerMotion.jumpVelocity / 20.0;
+          }
+          _jumpTriggerSeconds = 0;
+        }
+      }
+    }
+    _wasJumping = input.jump;
+    if (_jumpTriggerSeconds > 0) _jumpTriggerSeconds -= dt;
+
+    if (flying && mayfly) {
+      _flyingStep(dt, input);
+      return;
+    }
+
     // —— 水平：输入是玩家本地坐标（y 前、x 右），按 yaw 转到世界系 ——
     final speed = input.sneak
         ? PlayerMotion.sneakSpeed
@@ -127,4 +176,79 @@ class PlayerController {
     // 着地：竖直被挡且脚下有方块（原版 onGround 口径）。
     player.onGround = result.hitY && result.hasBlockBelow;
   }
+
+  /// 飞行固定步（REF: `LivingEntity.travelInAir` 空中分支 + `Player.travel`
+  /// 飞行分支 + `LocalPlayer.aiStep` 的竖直注入 + `Player.getFlyingSpeed`）。
+  ///
+  /// **原版逐刻递推**（`格/刻` 单位，20 刻/秒；速度源是服务器下发的
+  /// [AbilitiesSnapshot.flyingSpeed]，默认 0.05——`Abilities.DEFAULT_FLYING_SPEED`）：
+  ///
+  /// - 水平：`travelInAir` 在不在地面时`blockFriction = 1.0`，故摩擦
+  ///   `1.0 × 0.91 = 0.91`；`moveRelative(getFlyingSpeed())` 先注入
+  ///   `flyingSpeed × (疾跑 ? 2 : 1)`，再整体乘摩擦。
+  ///   终速 `0.05×0.91/0.09 = 0.5056 格/刻 ≈ 10.11 格/秒`（疾跑 ≈ 20.22）。
+  /// - 竖直：`LocalPlayer.aiStep` 先注入 `inputYa × flyingSpeed × 3.0`
+  ///   （**不含疾跑倍率**——原版该行直接调`abilities.getFlyingSpeed()`），
+  ///   随后 `Player.travel` 用 `originalMovementY × 0.6` 覆盖掉 `travelInAir`
+  ///   算出的重力与竖直摩擦结果。故**无重力**，竖直终速
+  ///   `0.15×0.6/0.4 = 0.225 格/刻 = 4.5 格/秒`。
+  ///
+  /// 用 1/20s 量子精确复刻该逐刻递推（固定步 1/120s，用刻累加器取整），
+  /// 位移换算：`格/刻 × (dt × 20)`。
+  ///
+  /// **不卡边**（原版 `makeStuckInBlock` 对 `abilities.flying` 豁免）；撞墙时
+  /// **不清零速度**（原版 `Entity.move` 只拦位置、不改 deltaMovement，清零会让
+  /// 贴墙飞行像"撞停"）。
+  void _flyingStep(double dt, InputState input) {
+    final flyingSpeed = abilities?.flyingSpeed ?? 0.05; // 格/刻²
+    final inputYa = (input.jump ? 1.0 : 0.0) - (input.sneak ? 1.0 : 0.0);
+
+    _flyAccumTicks += dt * 20.0;
+    while (_flyAccumTicks >= 1.0) {
+      _flyAccumTicks -= 1.0;
+
+      // —— 水平（REF: `LivingEntity.travelInAir` 空中分支）——
+      if (input.isMoving) {
+        final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
+        final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
+        final dir = (forward * input.move.y + right * input.move.x).normalized();
+        final accel = flyingSpeed * (input.sprint ? 2.0 : 1.0);
+        _flyVelocity.x = (_flyVelocity.x + dir.x * accel) * PlayerMotion.flyFriction;
+        _flyVelocity.z = (_flyVelocity.z + dir.z * accel) * PlayerMotion.flyFriction;
+      } else {
+        _flyVelocity.x *= PlayerMotion.flyFriction;
+        _flyVelocity.z *= PlayerMotion.flyFriction;
+      }
+
+      // —— 竖直：注入后由 `Player.travel` 收尾乘 0.6（重力被覆盖 ⇒ 无重力）——
+      _flyVelocity.y =
+          (_flyVelocity.y + inputYa * flyingSpeed * 3.0) * PlayerMotion.flyVerticalRetain;
+    }
+
+    final vxPerSec = _flyVelocity.x * 20.0;
+    final vyPerSec = _flyVelocity.y * 20.0;
+    final vzPerSec = _flyVelocity.z * 20.0;
+    final result = collision.move(
+      player.bounds,
+      vxPerSec * dt,
+      vyPerSec * dt,
+      vzPerSec * dt,
+    );
+    // 原版 `Entity.move` 撞墙只拦位置、不改速度——**故这里不清零**。
+    player.velocity.setValues(vxPerSec, vyPerSec, vzPerSec);
+    player.applyMove(result);
+    player.onGround = result.hitY && result.hasBlockBelow;
+  }
+
+  /// 飞行速度（`格/刻`；与 [Player.velocity]的 `格/秒` 分开承载）。
+  final Vector3 _flyVelocity = Vector3.zero();
+  double _flyAccumTicks = 0;
+}
+
+
+/// abilities 快照（app 壳每帧从会话同步；纯数据便于控制器单测）。
+class AbilitiesSnapshot {
+  AbilitiesSnapshot({this.mayfly = false, this.flyingSpeed = 0.05});
+  bool mayfly;
+  double flyingSpeed;
 }

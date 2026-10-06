@@ -643,3 +643,87 @@ final class ServerboundHello {
   final String name;
   final List<int> uuid;
 }
+
+// —— 玩家输入与能力（能力 player-input，2026-10-07）——
+
+/// 输入标志（REF: `world/entity/player/Input.java`：7 位打包，1=forward /
+/// 2=backward / 4=left / 8=right / 16=jump / 32=shift / 64=sprint）。
+class PlayerInputFlags {
+  PlayerInputFlags({
+    this.forward = false,
+    this.backward = false,
+    this.left = false,
+    this.right = false,
+    this.jump = false,
+    this.shift = false,
+    this.sprint = false,
+  });
+
+  final bool forward;
+  final bool backward;
+  final bool left;
+  final bool right;
+  final bool jump;
+  final bool shift;
+  final bool sprint;
+
+  /// 位打包/解出（Input.STREAM_CODEC 口径）。
+  static PlayerInputFlags fromByte(int flags) => PlayerInputFlags(
+        forward: (flags & 1) != 0,
+        backward: (flags & 2) != 0,
+        left: (flags & 4) != 0,
+        right: (flags & 8) != 0,
+        jump: (flags & 16) != 0,
+        shift: (flags & 32) != 0,
+        sprint: (flags & 64) != 0,
+      );
+
+  int pack() =>
+      (forward ? 1 : 0) |
+      (backward ? 2 : 0) |
+      (left ? 4 : 0) |
+      (right ? 8 : 0) |
+      (jump ? 16 : 0) |
+      (shift ? 32 : 0) |
+      (sprint ? 64 : 0);
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlayerInputFlags &&
+      other.pack() == pack();
+
+  @override
+  int get hashCode => pack();
+}
+
+/// REF: `ServerboundPlayerInputPacket.java`（Input 标志字节）。
+final class PlayerInputPacket {
+  PlayerInputPacket(this.input);
+  final PlayerInputFlags input;
+}
+
+/// REF: `ClientboundPlayerAbilitiesPacket.java`（标志字节 invulnerable1 /
+/// flying2 / canFly4 / instabuild8 + float flyingSpeed + float walkingSpeed）。
+final class PlayerAbilitiesIn {
+  PlayerAbilitiesIn({
+    required this.invulnerable,
+    required this.flying,
+    required this.mayfly,
+    required this.instabuild,
+    required this.flyingSpeed,
+    required this.walkingSpeed,
+  });
+
+  final bool invulnerable;
+  final bool flying;
+  final bool mayfly;
+  final bool instabuild;
+  final double flyingSpeed;
+  final double walkingSpeed;
+}
+
+/// REF: `ServerboundPlayerAbilitiesPacket.java`（仅 1 字节，bit2=flying）。
+final class PlayerAbilitiesOut {
+  PlayerAbilitiesOut({required this.flying});
+  final bool flying;
+}

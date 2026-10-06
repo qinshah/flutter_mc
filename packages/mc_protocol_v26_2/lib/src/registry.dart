@@ -636,6 +636,49 @@ class _ChunkBatchReceivedCodec extends PacketCodecBase<ChunkBatchReceived> {
   void encodeBody(ByteWriter w, ChunkBatchReceived p) => w.writeFloat(p.desiredChunksPerTick);
 }
 
+class _PlayerInputCodec extends PacketCodecBase<PlayerInputPacket> {
+  @override
+  PlayerInputPacket decodeBody(ByteReader r) =>
+      throw UnsupportedError('客户端只写不读');
+
+  @override
+  void encodeBody(ByteWriter w, PlayerInputPacket p) {
+    w.writeUnsignedByte(p.input.pack());
+  }
+}
+
+class _PlayerAbilitiesInCodec extends PacketCodecBase<PlayerAbilitiesIn> {
+  @override
+  PlayerAbilitiesIn decodeBody(ByteReader r) {
+    final flags = r.readUnsignedByte();
+    final flyingSpeed = r.readFloat();
+    final walkingSpeed = r.readFloat();
+    return PlayerAbilitiesIn(
+      invulnerable: (flags & 1) != 0,
+      flying: (flags & 2) != 0,
+      mayfly: (flags & 4) != 0,
+      instabuild: (flags & 8) != 0,
+      flyingSpeed: flyingSpeed,
+      walkingSpeed: walkingSpeed,
+    );
+  }
+
+  @override
+  void encodeBody(ByteWriter w, PlayerAbilitiesIn p) =>
+      throw UnsupportedError('客户端只读不写');
+}
+
+class _PlayerAbilitiesOutCodec extends PacketCodecBase<PlayerAbilitiesOut> {
+  @override
+  PlayerAbilitiesOut decodeBody(ByteReader r) =>
+      throw UnsupportedError('客户端只写不读');
+
+  @override
+  void encodeBody(ByteWriter w, PlayerAbilitiesOut p) {
+    w.writeUnsignedByte(p.flying ? 2 : 0);
+  }
+}
+
 class _PlayerActionCodec extends PacketCodecBase<PlayerAction> {
   @override
   PlayerAction decodeBody(ByteReader r) => throw UnsupportedError('客户端只写不读');
@@ -808,6 +851,7 @@ PacketRegistry buildRegistry26_2() {
   inb(ProtocolPhase.play, ids.PlayClientbound.gameEvent, _GameEventCodec());
   inb(ProtocolPhase.play, ids.PlayClientbound.updateTags, _UpdateTagsCodec());
   inb(ProtocolPhase.play, ids.PlayClientbound.respawn, _RawCodec());
+  inb(ProtocolPhase.play, ids.PlayClientbound.playerAbilities, _PlayerAbilitiesInCodec());
 
   // —— play：serverbound ——
   outb(ProtocolPhase.play, ids.PlayServerbound.keepAlive, KeepAlive, _KeepAliveCodec());
@@ -833,6 +877,10 @@ PacketRegistry buildRegistry26_2() {
       _ChunkBatchReceivedCodec());
   outb(ProtocolPhase.play, ids.PlayServerbound.playerAction, PlayerAction, _PlayerActionCodec());
   outb(ProtocolPhase.play, ids.PlayServerbound.useItemOn, UseItemOn, _UseItemOnCodec());
+  outb(ProtocolPhase.play, ids.PlayServerbound.playerInput, PlayerInputPacket,
+      _PlayerInputCodec());
+  outb(ProtocolPhase.play, ids.PlayServerbound.playerAbilities, PlayerAbilitiesOut,
+      _PlayerAbilitiesOutCodec());
   outb(ProtocolPhase.play, ids.PlayServerbound.swing, Swing, _SwingCodec());
   outb(ProtocolPhase.play, ids.PlayServerbound.acceptTeleportation, AcceptTeleportation,
       _AcceptTeleportationCodec());

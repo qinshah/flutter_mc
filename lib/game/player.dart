@@ -46,9 +46,15 @@ class Player {
     pitch = pitch.clamp(-limit, limit);
   }
 
-  void applyLook(Vector2 lookDelta, {double sensitivity = 0.0022}) {
-    yaw -= lookDelta.x * sensitivity;
-    pitch += lookDelta.y * sensitivity;
+  /// 应用视角增量（REF: `MouseHandler.turnPlayer` + `Entity.turn`：
+  /// sens = (0.6s+0.2)³×8.0，转向 0.15°/像素 → 弧度；sensitivity 为设置滑条
+  /// 0..1，默认 0.5 时恰为 1.0）。
+  void applyLook(Vector2 lookDelta, {double sensitivity = 0.5}) {
+    final ss = sensitivity * 0.6 + 0.2;
+    final sens = ss * ss * ss * 8.0;
+    const degToRad = math.pi / 180.0;
+    yaw -= lookDelta.x * 0.15 * sens * degToRad;
+    pitch += lookDelta.y * 0.15 * sens * degToRad;
     yaw = _wrapAngle(yaw);
     clampPitch();
   }

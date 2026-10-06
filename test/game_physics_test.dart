@@ -394,25 +394,31 @@ void main() {
     expect(player.yaw, 0);
     expect(player.pitch, 0);
 
-    // 默认灵敏度 0.0022。
+    // 原版公式（player-input 切片换用）：sens=(0.6×0.5+0.2)³×8=1.0，0.15°/像素。
+    const perPx = 0.15 * math.pi / 180.0;
     player.applyLook(Vector2(1, 0));
-    expect(player.yaw, closeTo(-0.0022, 1e-12), reason: '鼠标右移 → yaw 减小 → 视线右转');
-    expect(player.pitch, closeTo(0, 1e-12));
+    expect(player.yaw, closeTo(-perPx, 1e-9), reason: '鼠标右移 → yaw 减小 → 视线右转');
+    expect(player.pitch, closeTo(0, 1e-9));
 
     player.applyLook(Vector2(-3, 2));
     expect(
       player.yaw,
-      closeTo(-0.0022 + 3 * 0.0022, 1e-12),
+      closeTo(-perPx + 3 * perPx, 1e-9),
       reason: '鼠标左移反向加回',
     );
     expect(
       player.pitch,
-      closeTo(2 * 0.0022, 1e-12),
+      closeTo(2 * perPx, 1e-9),
       reason: '鼠标下移 → pitch 增大（正值向下）',
     );
 
+    // 灵敏度可注入：s=0.1 → sens=(0.26)³×8=0.140608，1px=0.15°×0.140608。
     final custom = Player()..applyLook(Vector2(1, 0), sensitivity: 0.1);
-    expect(custom.yaw, closeTo(-0.1, 1e-12), reason: '灵敏度可注入');
+    expect(
+      custom.yaw,
+      closeTo(-0.15 * 0.140608 * math.pi / 180, 1e-9),
+      reason: '灵敏度可注入',
+    );
     expect(custom.pitch, 0);
   });
 

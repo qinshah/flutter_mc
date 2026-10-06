@@ -82,6 +82,19 @@ final class PositionCorrection extends SessionEvent {
 }
 
 /// 会话因服务器断开/错误而结束。
+/// abilities 服务器下发更新（跨 isolate 携带值；getter 在 isolate 内）。
+final class AbilitiesUpdated extends SessionEvent {
+  const AbilitiesUpdated({
+    required this.mayfly,
+    required this.flying,
+    required this.flyingSpeed,
+  });
+
+  final bool mayfly;
+  final bool flying;
+  final double flyingSpeed;
+}
+
 final class SessionClosed extends SessionEvent {
   const SessionClosed(this.reason);
 
@@ -404,6 +417,16 @@ final class RemoteSession {
                 ..writeFloat(min(f.chunksPerTick.toDouble(), 500.0)))
               .takeBytes(),
         );
+      case final PlayerAbilitiesIn a:
+        // 服务器权威 abilities（mayfly/flying/飞行速度）——飞行可行性与参数的唯一来源。
+        _mayfly = a.mayfly;
+        _serverFlying = a.flying;
+        _flyingSpeed = a.flyingSpeed;
+        _events.add(AbilitiesUpdated(
+          mayfly: a.mayfly,
+          flying: a.flying,
+          flyingSpeed: a.flyingSpeed,
+        ));
       case final PlayerPosition pos:
         _handlePosition(pos);
       case final SetTime t:
@@ -609,6 +632,56 @@ final class RemoteSession {
   // —— 上行 API（调用方每 tick / 交互时调用） ——
 
   /// 每 tick 上报玩家状态（本地预测；design D6）。26.x 客户端 tick 语义：
+  // —— abilities（player-input 切片）——
+  bool _mayfly = false;
+  bool _serverFlying = false;
+  double _flyingSpeed = 0.05;
+
+  /// 服务器最近一次下发的 mayfly（是否允许创造飞行）。
+  bool get mayfly => _mayfly;
+
+  /// 服务器权威的 flying 标志。
+  bool get serverFlying => _serverFlying;
+
+  /// 飞行速度（格/刻；默认 0.05，服务器可下发覆盖）。
+  double get flyingSpeed => _flyingSpeed;
+
+  /// 飞行切换上报（REF: LocalPlayer.onUpdateAbilities → ServerboundPlayerAbilitiesPacket，
+  /// 仅 1 字节 flying 位）。
+  void sendAbilities({required bool flying}) {
+    if (!_playPhase || _closed) return;
+    _serverFlying = flying;
+    _sendTyped(ProtocolPhase.play, PlayerAbilitiesOut(flying: flying));
+  }
+
+  PlayerInputFlags? _lastSentInput;
+
+  /// 输入标志上报（REF: LocalPlayer.tick 的 lastSentInput 口径：**变更才发**）。
+  void sendInputFlagsIfChanged({
+    required bool forward,
+    required bool backward,
+    required bool left,
+    required bool right,
+    required bool jump,
+    required bool shift,
+    required bool sprint,
+  }) {
+    if (!_playPhase || _closed) return;
+    final flags = PlayerInputFlags(
+      forward: forward,
+      backward: backward,
+      left: left,
+      right: right,
+      jump: jump,
+      shift: shift,
+      sprint: sprint,
+    );
+    if (_lastSentInput != null && _lastSentInput!.pack() == flags.pack()) return;
+    _lastSentInput = flags;
+    _sendTyped(ProtocolPhase.play, PlayerInputPacket(flags));
+  }
+
+
   /// 移动包 + ClientTickEnd 成对发送（notes 1.2 #13）。
   void updatePlayer(double x, double y, double z, double yaw, double pitch,
       {required bool onGround, required bool horizontalCollision}) {
