@@ -7,9 +7,9 @@
 
 ## 2. mc_render 网格器
 
-- [ ] 2.1 读 fscraft `mesher.dart` 与 mc_session 区块/调色板数据结构，写移植笔记（数据源差异清单）
-- [ ] 2.2 移植网格器：区块→分区几何（顶点/UV/索引，面剔除），UV 由注入的方块面→图集矩形函数提供；纯 Dart、不碰引擎类型；简化点注释；验证：golden 单测（固定小区块→期望顶点数/UV 快照），`dart test` 全绿
-- [ ] 2.3 mc_render README 更新（原版对应物一节落到实现）；验证：analyze 零 issue
+- [x] 2.1 读 fscraft `mesher.dart` 与 mc_session 区块/调色板数据结构，写移植笔记（数据源差异清单）
+- [x] 2.2 移植网格器：区块→分区几何（顶点/UV/索引，面剔除），UV 由注入的方块面→图集矩形函数提供；纯 Dart、不碰引擎类型；简化点注释；验证：golden 单测（固定小区块→期望顶点数/UV 快照），`dart test` 全绿
+- [x] 2.3 mc_render README 更新（原版对应物一节落到实现）；验证：analyze 零 issue
 
 ## 3. app 壳游戏屏
 
