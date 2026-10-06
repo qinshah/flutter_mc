@@ -162,16 +162,14 @@ class _GameScreenState extends State<GameScreen> {
 
     final skySource = GradientSkySource();
     _skySource = skySource;
-    _scene
-      ..skybox = Skybox(skySource)
-      // 天空同时驱动 IBL 与方向光：昼夜不只是"天变黑"，世界亮度也跟着走。
-      // 刷新走 interval（服务器时间约每秒一次，逐帧重烘没必要）。
-      ..skyEnvironment = SkyEnvironment(
-        skySource,
-        refresh: SkyEnvironmentRefresh.interval,
-        interval: const Duration(seconds: 2),
-      )
-      ..sunLight = SunLight(skySource);
+    // 只设**可见天空**。
+    //
+    // 实拍判定：同时设 `skyEnvironment`（它接管 scene.environment 并按策略重烘 IBL）时，
+    // 可见天空会被渲染成深红——正午（dayFraction=0.247、sunElev=1.00，SkyModel 算出的
+    // zenith 是 (0.25,0.45,0.85) 蓝）也是红的；去掉 IBL/方向光绑定后天空即刻恢复蓝。
+    // 故本版只保留 skybox，昼夜 IBL 与方向光（含阴影）留作后续切片，届时需先查清
+    // SkyEnvironment 与 ShaderSkySource 混用时的可见天空来源。
+    _scene.skybox = Skybox(skySource);
     _applySky();
 
     if (!mounted) return;
