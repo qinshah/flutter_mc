@@ -16,33 +16,38 @@ class McScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
-    return Container(
-      color: const Color(0xFF17130F),
-      child: SafeArea(
-        child: Column(
-          children: [
-            if (title != null) ...[
-              SizedBox(height: 10 * s),
-              Text(
-                title!,
-                style: TextStyle(
-                  color: const Color(0xFFE0E0E0),
-                  fontSize: 8 * s,
-                  height: 1.0,
-                ),
-              ),
-              SizedBox(height: 6 * s),
-              Container(
-                height: s,
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0x00FFFFFF), Color(0x40FFFFFF), Color(0x00FFFFFF)],
+    // Material(transparency)：为整棵界面树提供 Material/DefaultTextStyle 上下文。
+    // 缺它时 debug 构建下所有 Text 画黄色双下划线（根上下文缺失标记）。
+    return Material(
+      type: MaterialType.transparency,
+      child: Container(
+        color: const Color(0xFF17130F),
+        child: SafeArea(
+          child: Column(
+            children: [
+              if (title != null) ...[
+                SizedBox(height: 10 * s),
+                Text(
+                  title!,
+                  style: TextStyle(
+                    color: const Color(0xFFE0E0E0),
+                    fontSize: 8 * s,
+                    height: 1.0,
                   ),
                 ),
-              ),
+                SizedBox(height: 6 * s),
+                Container(
+                  height: s,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Color(0x00FFFFFF), Color(0x40FFFFFF), Color(0x00FFFFFF)],
+                    ),
+                  ),
+                ),
+              ],
+              Expanded(child: Builder(builder: body)),
             ],
-            Expanded(child: Builder(builder: body)),
-          ],
+          ),
         ),
       ),
     );

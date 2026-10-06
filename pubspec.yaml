@@ -40,6 +40,9 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: 6.0.0
+  # tool/driver_main.dart 调试入口用：dart MCP 的 flutter_driver_command 驱动界面
+  flutter_driver:
+    sdk: flutter
   # tool/extract_assets.dart 用：zip（client jar）读取
   archive: ^4.0.0
 
