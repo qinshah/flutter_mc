@@ -1,0 +1,353 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_scene/scene.dart';
+import 'package:mc_render/mc_render.dart';
+import 'package:mc_session/mc_session.dart';
+import 'package:vector_math/vector_math.dart' as vm;
+
+import 'block_textures.dart';
+import 'column_section_view.dart';
+import 'engine_space.dart';
+import 'player.dart';
+import 'sky_model.dart';
+
+/// 游戏屏（join-and-render 3.1 骨架）。
+///
+/// 原版对应物：`client.gui.screens.LevelLoadingScreen` → `LevelRenderer` 的装配面
+/// （世界渲染的持有与驱动）。本类是 app 壳的**装配层**，只做三件事：
+/// 1. flutter_scene `Scene` + `SceneView` 的持有与逐帧驱动；
+/// 2. 订阅会话事件流（worker isolate 回传的 `SessionEvent`），把服务器世界变成场景节点；
+/// 3. 相机跟随玩家（位置由 `PositionCorrection` 的服务器权威值定）。
+///
+/// **分层**：本文件可以用 flutter_scene；方块语义/网格计算在 `mc_render`（纯 Dart），
+/// 协议与会话在 `mc_session`（纯 Dart）。容器与光照首版从简（见 `_SectionMaterials`）。
+///
+/// 未接线（后续切片）：键盘输入与本地碰撞预测（3.2）、图集贴图与昼夜天空（3.3）、
+/// 多人屏入口与路由（3.4）。
+class GameScreen extends StatefulWidget {
+  const GameScreen({super.key, required this.session});
+
+  /// 装配点建好的会话句柄（`SessionAssembly.connectFor` 的产物）。
+  /// 本屏是它的消费方：`dispose` 时负责关掉。
+  final SessionHandle session;
+
+  @override
+  State<GameScreen> createState() => _GameScreenState();
+}
+
+class _GameScreenState extends State<GameScreen> {
+  final Scene _scene = Scene();
+  final Player _player = Player();
+
+  /// 已加载的列，键为 `(chunkX, chunkZ)`（邻居查询用）。
+  final Map<(int, int), RemoteChunkColumn> _columns = {};
+
+  /// 已挂载的段节点，键为 `"chunkX,sectionY,chunkZ"`。
+  final Map<String, Node> _sectionNodes = {};
+
+  /// 材质与贴图表都在引擎静态资源就绪后建（见 [_boot]）。
+  _SectionMaterials? _materials;
+  BlockTextures? _blockTextures;
+
+  /// 天空模型：纯数学，时间源是服务器的 `TimeUpdated`。
+  final SkyModel _sky = SkyModel();
+  GradientSkySource? _skySource;
+
+  late final PerspectiveCamera _camera;
+
+  StreamSubscription<SessionEvent>? _events;
+  bool _ready = false;
+  bool _exiting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _camera = PerspectiveCamera(
+      position: vm.Vector3(0, 0, 0),
+      target: vm.Vector3(0, 0, 1),
+      fovNear: 0.05,
+      fovFar: 1024,
+    );
+    _boot();
+  }
+
+  /// 引擎静态资源（shader bundle）就绪后才能建几何与材质——早建出来的会静默不渲染。
+  Future<void> _boot() async {
+    await Scene.initializeStaticResources();
+
+    // 几何 / 材质 / 天空都只能在静态资源就绪后构造（早建出来的会静默不渲染）。
+    final textures = await BlockTextures.load();
+    _blockTextures = textures;
+    _materials = _SectionMaterials(
+      textures == null ? null : await loadTexture(BlockTextures.atlasAssetPath),
+    );
+
+    final skySource = GradientSkySource();
+    _skySource = skySource;
+    _scene
+      ..skybox = Skybox(skySource)
+      // 天空同时驱动 IBL 与方向光：昼夜不只是"天变黑"，世界亮度也跟着走。
+      // 刷新走 interval（服务器时间约每秒一次，逐帧重烘没必要）。
+      ..skyEnvironment = SkyEnvironment(
+        skySource,
+        refresh: SkyEnvironmentRefresh.interval,
+        interval: const Duration(seconds: 2),
+      )
+      ..sunLight = SunLight(skySource);
+    _applySky();
+
+    if (!mounted) return;
+    _events = widget.session.events.listen(
+      _onEvent,
+      onDone: () => _exit('会话终止'),
+      onError: (Object e) => _exit('会话异常：$e'),
+    );
+    setState(() => _ready = true);
+  }
+
+  @override
+  void dispose() {
+    _events?.cancel();
+    widget.session.close();
+    super.dispose();
+  }
+
+  // —— 会话事件 → 场景 ——
+  //
+  // 事件来自 worker isolate，但 `SessionHandle.events` 是主 isolate 上的流
+  // （isolate 边界由 mc_session 收口），所以这里可以直接改场景。
+
+  void _onEvent(SessionEvent event) {
+    switch (event) {
+      case JoinedGame():
+        // 进服成功；玩家位姿等随后的 PositionCorrection（原版登录后必发一次）。
+        break;
+
+      case PositionCorrection(:final x, :final y, :final z, :final yRot, :final xRot):
+        // 服务器权威位姿（相对标志已在会话侧解成绝对值）；本切片直接采信。
+        _player.position.setValues(x, y, z);
+        _player.yaw = yRot * vm.degrees2Radians;
+        _player.pitch = xRot * vm.degrees2Radians;
+
+      case ChunkLoaded(:final chunk):
+        _mountColumn(chunk);
+
+      case ChunkUnloaded(:final x, :final z):
+        _unmountColumn(x, z);
+
+      case SessionClosed(:final reason):
+        _exit(reason);
+
+      case TimeUpdated(:final gameTime):
+        // 服务器时间 → 天色 / 太阳角（原版约每秒一次 SetTime）。
+        _sky.setGameTime(gameTime);
+        _applySky();
+
+      case BlockChanged():
+      case SectionChanged():
+        // 后续切片（方块交互的增量重网格化）用。
+        break;
+    }
+  }
+
+  void _exit(String reason) {
+    if (_exiting) return;
+    _exiting = true;
+    if (!mounted) return;
+    // 返回原因给调用方（多人屏据此提示），失败回到列表——design D6。
+    Navigator.of(context).pop(reason);
+  }
+
+  // —— 区块 → 场景节点 ——
+
+  void _mountColumn(RemoteChunkColumn column) {
+    _columns[(column.x, column.z)] = column;
+    for (var sy = 0; sy < column.sections.length; sy++) {
+      _remeshSection(column.x, sy, column.z);
+    }
+    // 新列就位后，贴边邻居段的边界面从"外表面"变成"内部面"，必须重建。
+    for (final (dx, dz) in const [(-1, 0), (1, 0), (0, -1), (0, 1)]) {
+      final neighbor = _columns[(column.x + dx, column.z + dz)];
+      if (neighbor == null) continue;
+      for (var sy = 0; sy < neighbor.sections.length; sy++) {
+        _remeshSection(neighbor.x, sy, neighbor.z);
+      }
+    }
+  }
+
+  void _unmountColumn(int chunkX, int chunkZ) {
+    _columns.remove((chunkX, chunkZ));
+    final prefix = '$chunkX,';
+    final suffix = ',$chunkZ';
+    final doomed = _sectionNodes.keys
+        .where((k) => k.startsWith(prefix) && k.endsWith(suffix))
+        .toList();
+    for (final key in doomed) {
+      final node = _sectionNodes.remove(key);
+      if (node != null) _scene.remove(node);
+    }
+    // 邻居的贴边面重新变成外表面，需要复建。
+    for (final (dx, dz) in const [(-1, 0), (1, 0), (0, -1), (0, 1)]) {
+      final neighbor = _columns[(chunkX + dx, chunkZ + dz)];
+      if (neighbor == null) continue;
+      for (var sy = 0; sy < neighbor.sections.length; sy++) {
+        _remeshSection(neighbor.x, sy, neighbor.z);
+      }
+    }
+  }
+
+  /// 重网格化一个段并替换它的场景节点（整段换节点，不做原地顶点更新）。
+  void _remeshSection(int chunkX, int sectionY, int chunkZ) {
+    final column = _columns[(chunkX, chunkZ)];
+    if (column == null || sectionY < 0 || sectionY >= column.sections.length) {
+      return;
+    }
+    // 静态资源/材质就绪前不该有事件进来（订阅在 _boot 里晚于建材质），防御一下。
+    if (_materials == null) return;
+
+    final key = '$chunkX,$sectionY,$chunkZ';
+    final old = _sectionNodes.remove(key);
+    if (old != null) _scene.remove(old);
+
+    final mesh = meshSection(
+      ColumnSectionView(column, sectionY),
+      neighborsOf(column, sectionY, _columns),
+      semantics: const BlockSemanticsV262(),
+      // 贴图表由资源包在启动期预解析（资产缺失时退化为整图 + 顶点色）。
+      uvFor: _blockTextures?.uvFor ?? _flatUv,
+    );
+    if (mesh.isEmpty) return;
+
+    final node = _buildNode(chunkX, sectionY, chunkZ, mesh);
+    _sectionNodes[key] = node;
+    _scene.add(node);
+  }
+
+  Node _buildNode(int chunkX, int sectionY, int chunkZ, ChunkMesh mesh) {
+    final primitives = <MeshPrimitive>[];
+
+    void addLayer(ChunkMeshData? data, PhysicallyBasedMaterial material) {
+      if (data == null || data.isEmpty) return;
+      final b = data.bounds;
+      primitives.add(
+        MeshPrimitive(
+          MeshGeometry.fromArrays(
+            positions: data.positions,
+            normals: data.normals,
+            texCoords: data.texCoords,
+            colors: data.colors,
+            indices: data.indices,
+            // 网格器边写顶点边更新的 AABB 直接交给引擎，省掉构造期一次全顶点扫描。
+            bounds: vm.Aabb3.minMax(
+              vm.Vector3(b[0], b[1], b[2]),
+              vm.Vector3(b[3], b[4], b[5]),
+            ),
+            // 段网格不需要 CPU 副本：体素射线检测走我们自己的世界查询，不用几何体。
+            retainCpuData: false,
+          ),
+          material,
+        ),
+      );
+    }
+
+    final materials = _materials!;
+    addLayer(mesh.opaque, materials.opaque);
+    addLayer(mesh.cutout, materials.cutout);
+    addLayer(mesh.translucent, materials.translucent);
+
+    return Node(
+      name: 'section',
+      mesh: Mesh.primitives(primitives: primitives),
+      // 段原点也要走手性转换（z 取反），否则整段跑到世界的另一侧。
+      localTransform: vm.Matrix4.translation(
+        sectionOriginToEngineSpace(chunkX, sectionY, chunkZ),
+      ),
+    )..shadowStatic = true;
+  }
+
+  /// 把 [SkyModel] 算出的天色 / 太阳喂给引擎的天空源。
+  ///
+  /// 太阳方向要过手性转换（世界右手系 → 引擎左手系），否则太阳会挂在镜像的位置。
+  void _applySky() {
+    final source = _skySource;
+    if (source == null) return;
+    source
+      ..zenithColor = _sky.zenithColor
+      ..horizonColor = _sky.horizonColor
+      ..groundColor = _sky.groundColor
+      ..sunDirection = directionToEngineSpace(_sky.sunDirection())
+      // HDR 太阳色按昼夜明暗缩放，夜里接近熄灭（否则"夜里的太阳也很亮"）。
+      ..sunColor = _sky.sunColor * _sky.sunIntensityScale;
+  }
+
+  // —— 逐帧 ——
+
+  void _onTick(Duration elapsed, double dt) {
+    // 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。
+    final eye = toEngineSpace(_player.eyePosition);
+    _camera
+      ..position = eye
+      ..target = eye + directionToEngineSpace(_player.lookDirection);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return Scaffold(
+      backgroundColor: const Color(0xFF87CEEB), // 3.3 接昼夜天空前的占位底色
+      body: SceneView(_scene, camera: _camera, onTick: _onTick),
+    );
+  }
+}
+
+/// 无贴图时的占位 UV：整图（配合顶点色看不出错乱，只是"没有纹理"）。
+UvRect _flatUv(int stateId, BlockFace face) => const UvRect(0, 0, 1, 1);
+
+/// 一个段的三层共享材质。
+///
+/// 原版对应物：`client.renderer.RenderType` 的层语义（opaque / cutout / translucent）。
+/// **全场景共享一份**：材质是"贴图 + alpha 处理 + 采样状态"的组合，逐段新建会让材质
+/// 实例随加载区块线性增长，既浪费显存也打散合批。
+///
+/// 贴图来自预拼接图集（`generated/block_atlas.png`，整图 + 逐面 UV 采样）；资源包
+/// 缺失时退化为顶点色（承载面朝向明暗），观感有体积感但没有纹理。
+class _SectionMaterials {
+  _SectionMaterials(TextureSource? atlas)
+      : opaque = _build(AlphaMode.opaque, atlas),
+        cutout = _build(AlphaMode.mask, atlas),
+        translucent = _build(AlphaMode.blend, atlas);
+
+  final PhysicallyBasedMaterial opaque;
+  final PhysicallyBasedMaterial cutout;
+  final PhysicallyBasedMaterial translucent;
+
+  static PhysicallyBasedMaterial _build(AlphaMode mode, TextureSource? atlas) {
+    final material = PhysicallyBasedMaterial()
+      ..metallicFactor = 0.0
+      ..roughnessFactor = 1.0
+      // 有贴图时基色由贴图给（明暗交给光照），无贴图时退化为顶点色（面朝向明暗）。
+      ..vertexColorWeight = atlas == null ? 1.0 : 0.0;
+    if (atlas != null) material.baseColorTexture = atlas;
+
+    switch (mode) {
+      case AlphaMode.opaque:
+        break;
+      case AlphaMode.mask:
+        // 叶与十字植物：alpha 测试出镂空轮廓；双面渲染，否则树冠内部只剩单层壳。
+        material
+          ..alphaMode = AlphaMode.mask
+          ..alphaCutoff = 0.4
+          ..doubleSided = true;
+      case AlphaMode.blend:
+        // 水：走深度排序的 blend pass；alpha 让水下可见（原版观感取向，同 fscraft）。
+        material
+          ..alphaMode = AlphaMode.blend
+          ..baseColorFactor = vm.Vector4(1.0, 1.0, 1.0, 0.6)
+          ..doubleSided = true;
+    }
+    return material;
+  }
+}
