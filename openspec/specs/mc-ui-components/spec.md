@@ -55,3 +55,17 @@ mc_ui 全部控件 SHALL 程序化绘制（CustomPaint/装饰）或由调用方�
 
 - **WHEN** 在不含任何资产声明的测试环境中 pump 各控件
 - **THEN** 全部正常渲染并通过交互测试
+
+### Requirement: MCEditBox 文本输入框
+
+MCEditBox SHALL 呈原版 EditBox 形态：暗底矩形，边框失焦灰色、聚焦白色；SHALL 支持文本输入（经 TextEditingController）、标签外置占位与光标移动；输入内容变化 SHALL 实时同步 controller。
+
+#### Scenario: 输入与聚焦反馈
+
+- **WHEN** 点击输入框并键入文本
+- **THEN** 文本实时显示且 controller 同步；聚焦时边框变白，失焦恢复灰色
+
+#### Scenario: 禁用态
+
+- **WHEN** 控件禁用
+- **THEN** 不接受输入且外观呈禁用态
