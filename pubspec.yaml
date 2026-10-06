@@ -64,3 +64,18 @@ flutter:
     - assets/vanilla/26_2/generated/
     - assets/vanilla/26_2/blockstates/
     - assets/vanilla/26_2/models/block/
+    - flutter_scene_generated/
+    - path: flutter_scene_generated/metal_ios/
+      platforms:
+        - ios
+    - path: flutter_scene_generated/metal_desktop/
+      platforms:
+        - macos
+    - path: flutter_scene_generated/opengl_es_vulkan/
+      platforms:
+        - android
+        - linux
+        - windows
+    - path: flutter_scene_generated/opengl_es/
+      platforms:
+        - web
