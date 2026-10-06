@@ -1,0 +1,23 @@
+name: mc_session
+description: "传输无关的联机会话编排与世界状态摄入。纯 Dart。"
+# TODO: remove publish_to when publishing
+publish_to: 'none'
+version: 0.1.0
+# repository: https://github.com/my_org/my_repo
+
+environment:
+  sdk: ^3.13.3
+
+# Add regular dependencies here.
+dependencies:
+  mc_nbt:
+    path: ../mc_nbt
+  mc_protocol_v26_2:
+    path: ../mc_protocol_v26_2
+  mc_wire:
+    path: ../mc_wire
+  # path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
