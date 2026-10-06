@@ -4,5 +4,10 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- 出站网络：只连用户指定的 MC 服务器（项目网络红线）。
+	     漏了这条会静默失败：沙箱直接拒绝 Socket.connect，
+	     表现是"点了加入服务器但服务器日志里毫无连接痕迹"。 -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>
