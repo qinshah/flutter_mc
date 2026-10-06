@@ -1,0 +1,16 @@
+name: mc_protocol_v26_2
+description: "MC 26.2 协议的包类型登记与编解码（判据 = mc-sources/minecraft-26.2）。纯 Dart。依赖 mc_wire 的传输核心与 mc_nbt。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.3
+
+dependencies:
+  mc_nbt:
+    path: ../mc_nbt
+  mc_wire:
+    path: ../mc_wire
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.32.0
