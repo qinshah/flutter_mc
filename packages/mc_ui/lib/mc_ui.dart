@@ -8,6 +8,7 @@ library;
 
 export 'src/mc_button.dart';
 export 'src/mc_cycle_button.dart';
+export 'src/mc_edit_box.dart';
 export 'src/mc_face_painter.dart';
 export 'src/mc_icon_button.dart';
 export 'src/mc_slider_button.dart';

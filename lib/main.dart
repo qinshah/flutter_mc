@@ -15,6 +15,7 @@ class FlutterMcApp extends StatelessWidget {
       title: 'flutter_mc',
       debugShowCheckedModeBanner: false,
       routes: mcRoutes,
+      onGenerateRoute: mcOnGenerateRoute,
     );
   }
 }

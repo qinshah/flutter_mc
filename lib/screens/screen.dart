@@ -16,12 +16,12 @@ class McScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
-    // Material(transparency)：为整棵界面树提供 Material/DefaultTextStyle 上下文。
-    // 缺它时 debug 构建下所有 Text 画黄色双下划线（根上下文缺失标记）。
-    return Material(
-      type: MaterialType.transparency,
-      child: Container(
-        color: const Color(0xFF17130F),
+    // Scaffold 提供SnackBar 等界面服务；Material(transparency) 为整棵界面树
+    // 提供默认文本样式上下文（缺它时 debug 构建下 Text 画黄色双下划线）。
+    return Scaffold(
+      backgroundColor: const Color(0xFF17130F),
+      body: Material(
+        type: MaterialType.transparency,
         child: SafeArea(
           child: Column(
             children: [
