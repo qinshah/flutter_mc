@@ -32,11 +32,19 @@ import 'sky_model.dart';
 /// 未接线（后续切片）：键盘输入与本地碰撞预测（3.2）、图集贴图与昼夜天空（3.3）、
 /// 多人屏入口与路由（3.4）。
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key, required this.session});
+  const GameScreen({
+    super.key,
+    required this.session,
+    required this.events,
+  });
 
   /// 装配点建好的会话句柄（`SessionAssembly.connectFor` 的产物）。
   /// 本屏是它的消费方：`dispose` 时负责关掉。
   final SessionHandle session;
+
+  /// **已缓冲**的会话事件流（由加入流程转发；会话自身的流是 broadcast、不缓存，
+  /// 直接订阅会丢掉进屏前到达的事件，包括初始位姿）。
+  final Stream<SessionEvent> events;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -167,7 +175,7 @@ class _GameScreenState extends State<GameScreen> {
     _applySky();
 
     if (!mounted) return;
-    _events = widget.session.events.listen(
+    _events = widget.events.listen(
       _onEvent,
       onDone: () => _exit('会话终止'),
       onError: (Object e) => _exit('会话异常：$e'),

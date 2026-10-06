@@ -27,7 +27,9 @@ void main() {
   SessionHandle handleOf(Stream<SessionEvent> events) {
     final port = ReceivePort();
     openPorts.add(port);
-    return SessionHandle(port.sendPort, events);
+    // 生产里的 handle.events 是 broadcast（joinServer 要挂两个监听：转发 + 取首个），
+    // 测试的假流也必须 broadcast，否则第二次监听会抛"已被监听"。
+    return SessionHandle(port.sendPort, events.asBroadcastStream());
   }
 
   GameLogin login() => GameLogin(

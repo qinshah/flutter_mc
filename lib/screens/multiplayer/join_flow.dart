@@ -38,8 +38,27 @@ Future<void> joinServer(
   required JoinConnector connector,
 }) async {
   SessionHandle? handle;
+  StreamController<SessionEvent>? relay;
   try {
     handle = await connector(server, kPlayerName);
+
+    // **先挂转发再等首个事件**：会话事件流是 broadcast，晚订阅者拿不到早先的事件，
+    // 而"进游戏屏"要经过一次路由跳转 + 游戏屏的启动（引擎静态资源 + 图集/模型），
+    // 好几秒里到达的事件会全部丢掉——**初始的 PlayerPosition 传送包正是最早那条**。
+    // 丢了它客户端就不知道自己在哪（停在原点），移动门禁也永远等不到"脚下列已加载"。
+    //
+    // 这里用**单订阅** StreamController：无人监听时它会缓冲，broadcast 不会；
+    // 游戏屏只订阅一次，正好合适。
+    relay = StreamController<SessionEvent>();
+    handle.events.listen(
+      (event) {
+        if (relay != null && !relay.isClosed) relay.add(event);
+      },
+      onDone: () {
+        if (relay != null && !relay.isClosed) relay.close();
+      },
+    );
+
     // 首个事件定成败：JoinedGame = 进服，SessionClosed = 失败（含连接被拒/版本不符）。
     final first = await handle.events.first.timeout(kJoinTimeout);
     if (!context.mounted) {
@@ -48,25 +67,40 @@ Future<void> joinServer(
     }
     if (first is SessionClosed) {
       handle.close();
+      unawaited(relay.close());
       _showError(context, '无法加入 ${server.name}：${first.reason}');
       return;
     }
 
-    // 进服成功 → 携带会话句柄进游戏屏（design D6）。
+    // 进服成功 → 携带会话句柄 + **已缓冲的事件流**进游戏屏（design D6）。
     final result = await Navigator.pushNamed(
       context,
       '/game',
-      arguments: GameArgs(session: handle, serverName: server.name),
+      arguments: GameArgs(
+        session: handle,
+        events: relay.stream,
+        serverName: server.name,
+      ),
     );
+    // 同理不 await：await 后再用 context 会触发 use_build_context_synchronously。
+    if (!relay.isClosed) unawaited(relay.close());
     if (!context.mounted) return;
     if (result is String && result.isNotEmpty) {
       _showError(context, '已断开与 ${server.name} 的连接：$result');
     }
   } on UnsupportedProtocolError catch (e) {
     handle?.close();
+    // 失败分支不把 relay 交出去，关掉即可；不 await（await 后再用 context 会触发
+    // use_build_context_synchronously）。
+    final failed = relay;
+    if (failed != null && !failed.isClosed) unawaited(failed.close());
     if (context.mounted) _showError(context, '$e');
   } on TimeoutException {
     handle?.close();
+    // 失败分支不把 relay 交出去，关掉即可；不 await（await 后再用 context 会触发
+    // use_build_context_synchronously）。
+    final failed = relay;
+    if (failed != null && !failed.isClosed) unawaited(failed.close());
     if (context.mounted) {
       _showError(
         context,
@@ -75,6 +109,10 @@ Future<void> joinServer(
     }
   } catch (e) {
     handle?.close();
+    // 失败分支不把 relay 交出去，关掉即可；不 await（await 后再用 context 会触发
+    // use_build_context_synchronously）。
+    final failed = relay;
+    if (failed != null && !failed.isClosed) unawaited(failed.close());
     if (context.mounted) _showError(context, '无法加入 ${server.name}：$e');
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:mc_session/mc_session.dart';
 
@@ -13,9 +15,18 @@ import 'screens/title_screen.dart';
 ///
 /// 句柄由装配点（`SessionAssembly.connectFor`）产出，游戏屏是它的消费方。
 class GameArgs {
-  const GameArgs({required this.session, required this.serverName});
+  const GameArgs({
+    required this.session,
+    required this.events,
+    required this.serverName,
+  });
 
   final SessionHandle session;
+
+  /// **已缓冲**的会话事件流（见 `join_flow.dart`）：会话的 broadcast 流不缓存，
+  /// 晚订阅会丢掉初始位姿，故由加入流程先挂转发再交给游戏屏。
+  final Stream<SessionEvent> events;
+
   final String serverName;
 }
 
@@ -41,7 +52,7 @@ Route<dynamic>? Function(RouteSettings) mcOnGenerateRoute = (settings) {
     case '/game':
       final args = settings.arguments! as GameArgs;
       return MaterialPageRoute<String>(
-        builder: (_) => GameScreen(session: args.session),
+        builder: (_) => GameScreen(session: args.session, events: args.events),
       );
     case '/multiplayer/confirm':
       final args = settings.arguments! as ConfirmArgs;
