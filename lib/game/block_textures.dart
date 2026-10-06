@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:mc_render/mc_render.dart';
 import 'package:mc_resource/mc_resource.dart';
@@ -113,6 +114,12 @@ class BlockTextures {
     }
   }
 
+  /// 贴图解析映射探针（`--dart-define=TRACE=true` 时生效）：去重打印前 40 条
+  /// "方块名+面 → 贴图路径"，并统计兜底命中次数——用于定位"某些面渲染成错色"。
+  static const bool _trace = bool.fromEnvironment('TRACE');
+  final Set<String> _logged = {};
+  int _fallbackHits = 0;
+
   /// 网格器注入点。**永不返回 null**（网格器签名非空），未知方块/缺贴图时兜底。
   UvRect uvFor(int stateId, BlockFace face) {
     final name = BlockSemanticsV262.blockNameOf(stateId);
@@ -128,9 +135,25 @@ class BlockTextures {
         if (path == null) continue;
         final sprite = _atlas.sprite(path);
         if (sprite != null) {
+          if (_trace && _logged.length < 40) {
+            final key = '$name/${face.name}→$path';
+            if (_logged.add(key)) {
+              debugPrint('[TEXMAP] $key rect=(${sprite.x},${sprite.y},'
+                  '${sprite.width}x${sprite.height}) '
+                  'uv=(${sprite.minU.toStringAsFixed(4)},'
+                  '${sprite.minV.toStringAsFixed(4)},'
+                  '${sprite.maxU.toStringAsFixed(4)},'
+                  '${sprite.maxV.toStringAsFixed(4)})');
+            }
+          }
           return UvRect(sprite.minU, sprite.minV, sprite.maxU, sprite.maxV);
         }
       }
+    }
+    _fallbackHits++;
+    if (_trace && _fallbackHits <= 20) {
+      debugPrint('[TEXMAP-MISS] ${BlockSemanticsV262.blockNameOf(stateId)}'
+          '/${face.name} → 兜底（未收录或贴图不在图集）');
     }
     return _fallback;
   }
