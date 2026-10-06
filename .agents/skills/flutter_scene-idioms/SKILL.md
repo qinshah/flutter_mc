@@ -1,6 +1,6 @@
 ---
 name: flutter_scene-idioms
-version: 4
+version: 14
 description: Write correct flutter_scene code. Use this whenever building 3D with the flutter_scene Dart/Flutter engine (rendering a scene, geometry, materials, lighting, loading a .glb model, animation, custom shaders). It corrects the wrong assumptions models carry from three.js, Godot, and Unity, and names the APIs and traps that are specific to this engine.
 ---
 
@@ -94,23 +94,32 @@ The two interoperate. A mostly-declarative scene can drop to an imperative node 
 
 **Materials.** `PhysicallyBasedMaterial` (base color, metallic, roughness, normal, emissive, plus clearcoat/sheen/transmission/etc.), `UnlitMaterial`, `ShaderMaterial` for custom shaders. Texture slots take a `TextureSource` (from `loadTexture(path)`), not a raw `gpu.Texture`.
 
-**Camera.** `PerspectiveCamera(position: ..., target: ...)`. There is no orthographic camera built in.
+**Camera.** `PerspectiveCamera(position: ..., target: ...)`, or `OrthographicCamera(position: ..., target: ..., projection: OrthographicProjection(size: OrthographicSize.height(12)))` for isometric, top-down, and pixel-art views. Every depth effect works under both.
 
 ## What you are probably underestimating (it is all here)
 
 Models trained on older or thinner information assume flutter_scene has no lighting, no shadows, and no post-processing. It has all of it. Before hand-rolling any of these, know they exist: **directional/point/spot/area lights, shadows (PCSS, contact shadows), GTAO ambient occlusion, screen-space reflections, parallax-corrected reflection probes, SSGI, depth of field, god rays, fog, auto exposure, LUT color grading, bloom, lens flares, MSAA/SMAA/FXAA, tone mapping, instancing, LOD.** See `references/what-exists.md` for the full surface with the class names.
+
+Low-end and GLES-class GPUs (Raspberry Pi, web, integrated Linux) get a budget, not a different engine: `scene.renderQuality.tier` (`RenderQualityTier.low`, `medium`, `high`; null picks the platform default) decides what `AntiAliasingMode.auto` and the scene color capture budget resolve to, and `scene.renderQuality.adaptive = true` lowers the render scale and then the tier from measured frame periods when frames overrun `targetFrameRate`. Transmissive (glass) materials are the expensive thing on such devices; `scene.sceneColorCaptureBatches = 1` makes them all share one capture.
 
 ## Traps that fail silently (wrong pixels, no error)
 
 - **Custom `ShaderMaterial` output is linear HDR premultiplied by alpha.** No tone mapping or gamma in your shader; the `ResolvePass` applies exposure, tone mapping, and the display transform. Linearize sRGB texture samples yourself. See `MATERIALS.md`.
 - **Never hand-roll a per-triangle winding flip to fix glTF orientation.** The importers handle the coordinate conversion; a manual flip leaves normals and IBL wrong.
 - **Do not emit a vertex buffer at the wrong stride.** Unskinned is 72 bytes/vertex, skinned is 104; the attribute order is fixed. Use `GeometryBuilder`, do not guess the layout.
+- **Surfaces that share a plane flicker as the camera moves (z-fighting), and one screenshot can look fine.**
+  - Never let two different-looking faces overlap in one plane. Repeated pieces abut (a piece's length equals its spacing), perpendicular runs meet at a corner post, and flat patches at one height never overlap. No depth setting fixes an exact overlap.
+  - An overlay that lies on a surface (a sign or screen on a wall, road paint, a decal quad, a rug) gets `material.depthLayer = 1` and wins at any distance; an overlay on that overlay gets 2. Place it flush or a few millimetres off, not at a guessed gap.
+  - Leave the camera's near plane at its default unless geometry clips. The engine fits the plane it rasterizes with to visible content every frame.
+  - Prove it in motion. `await scene.probeDepthConflicts()` names every pair of nodes that trades pixels from a camera; drive its `conflicts` to empty. `scene.debug.overlays.add(DebugOverlay.depthConflicts)` marks fights live in magenta, and debug builds print overlapping coplanar faces once the scene holds still.
+- **When pixels look wrong, look at the surface before guessing.** `scene.debug.view = const DebugView(channel: SurfaceDebugChannel.roughness)` (or `uv0`, `worldNormal`, `baseColor`, `validation`, any `SurfaceDebugChannel`) replaces the lit result with that value on every material, `scene.debug.split = 0.5` compares it against the lit half, `scene.debug.overlays.add(DebugOverlay.wireframe)` traces the mesh, and `node.debugView = DebugView.none` excludes a subtree. Works at runtime in any build. A `.fmat` shows any intermediate through `material.debug` and the `custom` channel.
 
 ## More depth
 
 - `references/architecture.md` for the declarative-vs-imperative choice in depth, the `Game`-class pattern, component-driven nodes, and hybrid interop.
 - `references/what-exists.md` for the full API surface (the false-absence fix).
 - `references/traps.md` for the complete silent-failure list.
+- `references/depth-and-layering.md` for why surfaces fight, a catalog of the overlaps generated content makes, and how to find and fix them.
 - The repo-root `MATERIALS.md` for the custom-shader contract.
 
 ## Keeping this skill current

@@ -17,7 +17,7 @@
 - [x] 2.2 建 `packages/mc_resource`：纯 Dart pubspec（依赖 mc_nbt）+ 空导出口 + README 写明原版对应（`client.resources`）与首个预期 change（PackResources 式资源抽象 + 提取管线）；验证：同上
 - [x] 2.3 建 `packages/mc_ui`：**Flutter** 包 pubspec（依赖 flutter，禁 flutter_scene）+ 空导出口 + README 写明原版对应（`client.gui.components`：Button/EditBox 等）与首个预期 change（MCButton）、外观资源经参数注入不捆官方资产；验证：`flutter pub get && flutter analyze` 无 error
   - 按用户要求，三包均用 CLI 生成（`dart create --template=package-simple` ×2、`flutter create --template=package` ×1）后清理模板示例
-- [ ] 2.4 根 `pubspec.yaml` 加三个骨架包的 path 依赖；验证：根目录 `flutter pub get` 成功
+- [x] 2.4 根 `pubspec.yaml` 加三个骨架包的 path 依赖；验证：根目录 `flutter pub get` 成功
 
 ## 3. 文档三件套
 
