@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_scene/scene.dart';
 import 'package:mc_render/mc_render.dart';
 import 'package:mc_session/mc_session.dart';
@@ -9,7 +11,11 @@ import 'package:vector_math/vector_math.dart' as vm;
 import 'block_textures.dart';
 import 'column_section_view.dart';
 import 'engine_space.dart';
+import 'input_state.dart';
+import 'key_map.dart';
 import 'player.dart';
+import 'player_controller.dart';
+import 'session_collision_world.dart';
 import 'sky_model.dart';
 
 /// 游戏屏（join-and-render 3.1 骨架）。
@@ -54,6 +60,12 @@ class _GameScreenState extends State<GameScreen> {
   final SkyModel _sky = SkyModel();
   GradientSkySource? _skySource;
 
+  /// 输入与物理（3.2）：按键状态 → `InputState` → `PlayerController` → 上行。
+  final InputState _input = InputState();
+  final Set<LogicalKeyboardKey> _pressed = {};
+  final FocusNode _focus = FocusNode();
+  late final PlayerController _controller;
+
   late final PerspectiveCamera _camera;
 
   StreamSubscription<SessionEvent>? _events;
@@ -63,6 +75,10 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    _controller = PlayerController(
+      world: SessionCollisionWorld(_columns),
+      player: _player,
+    );
     _camera = PerspectiveCamera(
       position: vm.Vector3(0, 0, 0),
       target: vm.Vector3(0, 0, 1),
@@ -109,8 +125,15 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void dispose() {
     _events?.cancel();
+    _focus.dispose();
     widget.session.close();
     super.dispose();
+  }
+
+  // —— 输入（Flutter 输入是本项目三处自由设计之一；键位照原版 KeyMapping） ——
+
+  void _onKey(KeyEvent event) {
+    if (KeyMap.update(_pressed, event)) KeyMap.apply(_pressed, _input);
   }
 
   // —— 会话事件 → 场景 ——
@@ -125,10 +148,12 @@ class _GameScreenState extends State<GameScreen> {
         break;
 
       case PositionCorrection(:final x, :final y, :final z, :final yRot, :final xRot):
-        // 服务器权威位姿（相对标志已在会话侧解成绝对值）；本切片直接采信。
+        // 服务器权威位姿（相对标志已在会话侧解成绝对值）；直接采信并清速度。
         _player.position.setValues(x, y, z);
-        _player.yaw = yRot * vm.degrees2Radians;
-        _player.pitch = xRot * vm.degrees2Radians;
+        _player.velocity.setZero();
+        // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
+        _player.yaw = (180.0 - yRot) * math.pi / 180.0;
+        _player.pitch = xRot * math.pi / 180.0;
 
       case ChunkLoaded(:final chunk):
         _mountColumn(chunk);
@@ -284,7 +309,26 @@ class _GameScreenState extends State<GameScreen> {
   // —— 逐帧 ——
 
   void _onTick(Duration elapsed, double dt) {
-    // 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。
+    // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
+    _controller.tick(dt, _input);
+
+    // 2) 上行玩家状态（原版角度制：yaw 0 = 朝 +Z；本应用 0 = 朝 -Z）。
+    widget.session.commands.send(
+      CmdUpdatePlayer(
+        x: _player.position.x,
+        y: _player.position.y,
+        z: _player.position.z,
+        yaw: 180.0 - _player.yaw * 180.0 / math.pi,
+        pitch: _player.pitch * 180.0 / math.pi,
+        onGround: _player.onGround,
+        horizontalCollision: false,
+      ),
+    );
+
+    // 3) 本帧的鼠标位移是消费型输入，用完即清（按住的键保留）。
+    _input.endFrame();
+
+    // 4) 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。
     final eye = toEngineSpace(_player.eyePosition);
     _camera
       ..position = eye
@@ -298,7 +342,12 @@ class _GameScreenState extends State<GameScreen> {
     }
     return Scaffold(
       backgroundColor: const Color(0xFF87CEEB), // 3.3 接昼夜天空前的占位底色
-      body: SceneView(_scene, camera: _camera, onTick: _onTick),
+      body: KeyboardListener(
+        focusNode: _focus,
+        autofocus: true,
+        onKeyEvent: _onKey,
+        child: SceneView(_scene, camera: _camera, onTick: _onTick),
+      ),
     );
   }
 }
