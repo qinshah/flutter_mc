@@ -35,6 +35,12 @@ class BlockTextures {
   /// 查不到时的兜底矩形。
   final UvRect _fallback;
 
+  /// `stateId → 该方块的 面键→贴图路径`（未收录为 null）。
+  ///
+  /// 必须缓存：`BlockSemanticsV262.blockNameOf` 每次都做身份串的字符串解析，
+  /// 而 `uvFor` 是**逐面**调用的热路径。
+  final Map<int, Map<String, String>?> _byState = {};
+
   int get spriteCount => _atlas.spriteCount;
   int get blockCount => _byBlock.length;
 
@@ -83,7 +89,10 @@ class BlockTextures {
 
   /// 网格器注入点。**永不返回 null**（网格器签名非空），未知方块/缺贴图时兜底。
   UvRect uvFor(int stateId, BlockFace face) {
-    final byKey = _byBlock[BlockSemanticsV262.blockNameOf(stateId)];
+    final byKey = _byState.putIfAbsent(
+      stateId,
+      () => _byBlock[BlockSemanticsV262.blockNameOf(stateId)],
+    );
     if (byKey != null) {
       for (final key in _keysFor(face)) {
         final path = byKey[key];

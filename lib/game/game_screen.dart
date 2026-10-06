@@ -52,6 +52,24 @@ class _GameScreenState extends State<GameScreen> {
   /// 已挂载的段节点，键为 `"chunkX,sectionY,chunkZ"`。
   final Map<String, Node> _sectionNodes = {};
 
+  /// 方块语义的**查询缓存**（mc_render 自带）。必须复用同一个实例：语义查询是
+  /// 网格化最热的一环（每格每面都要问），而 `BlockSemanticsV262` 每次都做
+  /// stateId → 身份串的字符串解析 + contains/startsWith 判定。缓存后每个 stateId
+  /// 只算一次。**注意**：不缓存时视距内几百列的网格化会把主 isolate 卡死（实测）。
+  final MeshSemanticsCache _semantics =
+      MeshSemanticsCache(const BlockSemanticsV262());
+
+  /// 待网格化的段（脏队列 + 去重集合）。
+  ///
+  /// 列到达时**只登记不网格化**，改由 [_onTick] 按帧摊还——否则一次收到一批列
+  /// （每列 24 段 + 4 个邻居各 24 段）会在单帧里做上百次 16³ 扫描，界面直接卡死。
+  final List<(int, int, int)> _dirtyQueue = [];
+  final Set<(int, int, int)> _dirtySet = {};
+  int _dirtyCursor = 0;
+
+  /// 每帧最多网格化多少段（摊还预算）。宁可地形晚几帧补齐，也不能卡住输入与渲染。
+  static const int _meshBudgetPerFrame = 6;
+
   /// 材质与贴图表都在引擎静态资源就绪后建（见 [_boot]）。
   _SectionMaterials? _materials;
   BlockTextures? _blockTextures;
@@ -189,15 +207,38 @@ class _GameScreenState extends State<GameScreen> {
   void _mountColumn(RemoteChunkColumn column) {
     _columns[(column.x, column.z)] = column;
     for (var sy = 0; sy < column.sections.length; sy++) {
-      _remeshSection(column.x, sy, column.z);
+      _markDirty(column.x, sy, column.z);
     }
     // 新列就位后，贴边邻居段的边界面从"外表面"变成"内部面"，必须重建。
     for (final (dx, dz) in const [(-1, 0), (1, 0), (0, -1), (0, 1)]) {
       final neighbor = _columns[(column.x + dx, column.z + dz)];
       if (neighbor == null) continue;
       for (var sy = 0; sy < neighbor.sections.length; sy++) {
-        _remeshSection(neighbor.x, sy, neighbor.z);
+        _markDirty(neighbor.x, sy, neighbor.z);
       }
+    }
+  }
+
+  /// 登记一个待网格化的段（去重；真正干活在 [_processDirty]）。
+  void _markDirty(int chunkX, int sectionY, int chunkZ) {
+    if (_dirtySet.add((chunkX, sectionY, chunkZ))) {
+      _dirtyQueue.add((chunkX, sectionY, chunkZ));
+    }
+  }
+
+  /// 按帧预算消费脏队列（摊还网格化）。一次调用是同步的，不会与事件交错。
+  void _processDirty() {
+    var budget = _meshBudgetPerFrame;
+    while (budget > 0 && _dirtyCursor < _dirtyQueue.length) {
+      final (x, y, z) = _dirtyQueue[_dirtyCursor++];
+      _dirtySet.remove((x, y, z));
+      _remeshSection(x, y, z);
+      budget--;
+    }
+    if (_dirtyCursor >= _dirtyQueue.length) {
+      _dirtyQueue.clear();
+      _dirtySet.clear();
+      _dirtyCursor = 0;
     }
   }
 
@@ -217,7 +258,7 @@ class _GameScreenState extends State<GameScreen> {
       final neighbor = _columns[(chunkX + dx, chunkZ + dz)];
       if (neighbor == null) continue;
       for (var sy = 0; sy < neighbor.sections.length; sy++) {
-        _remeshSection(neighbor.x, sy, neighbor.z);
+        _markDirty(neighbor.x, sy, neighbor.z);
       }
     }
   }
@@ -238,7 +279,7 @@ class _GameScreenState extends State<GameScreen> {
     final mesh = meshSection(
       ColumnSectionView(column, sectionY),
       neighborsOf(column, sectionY, _columns),
-      semantics: const BlockSemanticsV262(),
+      semantics: _semantics,
       // 贴图表由资源包在启动期预解析（资产缺失时退化为整图 + 顶点色）。
       uvFor: _blockTextures?.uvFor ?? _flatUv,
     );
@@ -309,6 +350,9 @@ class _GameScreenState extends State<GameScreen> {
   // —— 逐帧 ——
 
   void _onTick(Duration elapsed, double dt) {
+    // 0) 摊还网格化（每帧限额，避免地形涌入时卡住输入与渲染）。
+    _processDirty();
+
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
 
