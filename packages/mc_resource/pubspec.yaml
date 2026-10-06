@@ -1,0 +1,14 @@
+name: mc_resource
+description: "资源包读取抽象：来源可插拔（目录/zip/未来下载 jar），资产解析为纯数据。纯 Dart。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.3
+
+dependencies:
+  mc_nbt:
+    path: ../mc_nbt
+
+dev_dependencies:
+  lints: ^6.0.0
