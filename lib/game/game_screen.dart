@@ -425,6 +425,18 @@ class _GameScreenState extends State<GameScreen> {
     // 于是玩家永远不动、也不上行（实测：门禁加上它就再无任何上行）。
     final spawnColumn = (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
     if (!_columns.containsKey(spawnColumn)) {
+      // 门禁挡住时也要留痕：否则探针一行不打，会被误读成"应用没跑起来"。
+      if (_trace) {
+        _traceAccum += dt;
+        if (_traceAccum >= 1.0) {
+          _traceAccum = 0;
+          debugPrint('[TRACE-BLOCK] 脚下列 ${spawnColumn.$1},${spawnColumn.$2} 未加载；'
+              'pos=(${_player.position.x.toStringAsFixed(1)},'
+              '${_player.position.y.toStringAsFixed(1)},'
+              '${_player.position.z.toStringAsFixed(1)}) '
+              'cols=${_columns.length}');
+        }
+      }
       _cameraSync();
       return;
     }
@@ -463,7 +475,9 @@ class _GameScreenState extends State<GameScreen> {
           'collidable=${world.isCollidable(bx, by, bz)} '
           'collidableBelow=${world.isCollidable(bx, by - 1, bz)} '
           'dirty=${_dirtyQueue.length - _dirtyCursor} '
-          'yaw=${_player.yaw.toStringAsFixed(2)}',
+          'yaw=${_player.yaw.toStringAsFixed(2)} '
+          'gameTime=${_sky.gameTime} day=${_sky.dayFraction.toStringAsFixed(3)} '
+          'sunElev=${_sky.sunElevation.toStringAsFixed(2)}',
         );
       }
     }
