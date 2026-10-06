@@ -90,6 +90,9 @@ class _GameScreenState extends State<GameScreen> {
   bool _ready = false;
   bool _exiting = false;
 
+  /// 是否已收到服务器权威位姿（登录后必发一次）。
+  bool _hasSpawn = false;
+
   @override
   void initState() {
     super.initState();
@@ -169,6 +172,7 @@ class _GameScreenState extends State<GameScreen> {
         // 服务器权威位姿（相对标志已在会话侧解成绝对值）；直接采信并清速度。
         _player.position.setValues(x, y, z);
         _player.velocity.setZero();
+        _hasSpawn = true;
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
         _player.yaw = (180.0 - yRot) * math.pi / 180.0;
         _player.pitch = xRot * math.pi / 180.0;
@@ -353,6 +357,15 @@ class _GameScreenState extends State<GameScreen> {
     // 0) 摊还网格化（每帧限额，避免地形涌入时卡住输入与渲染）。
     _processDirty();
 
+    // 脚下这一列的区块还没到就**不做物理也不上行**：原版客户端在收到区块前同样
+    // 不动。否则本地重力会在空世界里自由落体，人掉出世界（服务器会刷
+    // "moved too quickly!"），而相机跑到地形下方。
+    final spawnColumn = (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
+    if (!_hasSpawn || !_columns.containsKey(spawnColumn)) {
+      _cameraSync();
+      return;
+    }
+
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
 
@@ -372,7 +385,12 @@ class _GameScreenState extends State<GameScreen> {
     // 3) 本帧的鼠标位移是消费型输入，用完即清（按住的键保留）。
     _input.endFrame();
 
-    // 4) 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。
+    // 4) 相机跟随。
+    _cameraSync();
+  }
+
+  /// 相机 = 玩家眼睛位置（含手性转换），朝向 = 玩家视线方向。
+  void _cameraSync() {
     final eye = toEngineSpace(_player.eyePosition);
     _camera
       ..position = eye
