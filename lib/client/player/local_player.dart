@@ -2,11 +2,25 @@ import 'dart:math' as math;
 
 import 'package:vector_math/vector_math.dart';
 
-import 'collision.dart';
-import 'input_state.dart';
-import 'player.dart';
+import 'package:flutter_mc/game/collision.dart';
+import 'package:flutter_mc/world/entity/player/abilities.dart';
+import 'package:flutter_mc/world/entity/player/input.dart';
+import 'package:flutter_mc/world/entity/player/player.dart';
 
-/// 玩家运动学常量（原版**每刻值**换算到每秒；判据 `mc-sources/minecraft-26.2`）。
+/// 本地玩家：读 [Input] → 重力/跳跃 → 碰撞求解 → 写 [Player]。
+///
+/// 判据：`net.minecraft.client.player.LocalPlayer`
+/// （mc-sources/minecraft-26.2/.../client/player/LocalPlayer.java:117）。
+///
+/// **纯逻辑**：不 import Flutter / flutter_scene，所以运动学可以完整单测
+/// （引擎侧的按键与节点变换在 app 壳的 `game_screen.dart` 里接）。
+///
+/// 简化点（标注）：水平方向按输入**直接赋值目标速度**（无加速/摩擦惯性）——
+/// 原版 `LivingEntity.travel` 的加速度与地面摩擦链（0.91 摩擦）留作后续切片。
+/// 竖直方向照原版**逐刻**语义（先减重力、再乘空气阻力），故终端速度与原版一致。
+class LocalPlayer {
+
+/// —— 运动常量（判据 mc-sources/minecraft-26.2）——（原版**每刻值**换算到每秒；判据 `mc-sources/minecraft-26.2`）。
 ///
 /// - 重力 0.08 /刻 —— `Attributes.GRAVITY` 默认值（Attributes.java:56）→ ×400 = 32 block/s²
 /// - 跳跃初速 0.42 /刻 —— `Attributes.JUMP_STRENGTH` 默认值（Attributes.java:59），
@@ -15,22 +29,12 @@ import 'player.dart';
 /// - 终端速度 —— 0.08 / (1 − 0.98) = 3.92 block/刻 → 78.4 block/s
 /// - 行走/疾跑/潜行 —— 4.317 / 5.612 / 1.295 block/s（`Player.createAttributes()` 的
 ///   `MOVEMENT_SPEED` 0.1，Player.java:209，配地面摩擦的稳态速度）
-class PlayerMotion {
   static const double gravity = 32.0;
   static const double jumpVelocity = 8.4;
   static const double terminalVelocity = -78.4;
 
-  /// 每刻空气阻力 → 连续阻尼系数：`k = -ln(0.98) × 20 ≈ 0.404 /s`。
-  static const double airDragPerTick = 0.98;
 
-  /// `Attributes.MOVEMENT_SPEED` 的**属性值**（判据 `Player:209`
-  /// `add(Attributes.MOVEMENT_SPEED, 0.1F)`）。
   ///
-  /// **这不是格/秒**——原版速度有两套量纲，别混：
-  /// - **属性值** 0.1：喂给地面行走分支（`getFrictionInfluencedSpeed` 地面分支）
-  /// - **格/秒** 4.317：`getFrictionInfluencedSpeed` 地面分支乘 `0.216/friction³`
-  ///   后得到格/刻，再 ×20 才是格/秒。
-  static const double moveSpeedAttribute = 0.1;
 
   /// 创造飞行的**竖直**注入系数（判据 `LocalPlayer.aiStep`，`LocalPlayer.java:844`）：
   /// `setDeltaMovement(add(0, inputYa * abilities.getFlyingSpeed() * 3.0F, 0))`。
@@ -84,20 +88,7 @@ class PlayerMotion {
 
   /// 单帧最多补算步数（防"卡顿一下补算几百步"造成瞬移）。
   static const int maxStepsPerFrame = 12;
-
-  static final double airDamping = -math.log(airDragPerTick) * 20.0;
-}
-
-/// 玩家控制器：读 [InputState] → 重力/跳跃 → 碰撞求解 → 写 [Player]。
-///
-/// **纯逻辑**：不 import Flutter / flutter_scene，所以运动学可以完整单测
-/// （引擎侧的按键与节点变换在 app 壳的 `game_screen.dart` 里接）。
-///
-/// 简化点（标注）：水平方向按输入**直接赋值目标速度**（无加速/摩擦惯性）——
-/// 原版 `LivingEntity.travel` 的加速度与地面摩擦链（0.91 摩擦）留作后续切片。
-/// 竖直方向照原版**逐刻**语义（先减重力、再乘空气阻力），故终端速度与原版一致。
-class PlayerController {
-  PlayerController({
+  LocalPlayer({
     required this.world,
     required this.player,
     VoxelCollision? collision,
@@ -110,7 +101,7 @@ class PlayerController {
   final VoxelCollision collision;
 
   /// 服务器权威 abilities（mayfly/flyingSpeed）；null=未知（按不可飞处理）。
-  final AbilitiesSnapshot? abilities;
+  final Abilities? abilities;
 
   /// 双击空格切换飞行后回调（app 壳 → session.sendAbilities 上报）。
   final void Function(bool flying)? onFlyingToggled;
@@ -150,8 +141,8 @@ class PlayerController {
   /// "阶梯式爬升"的滞手感（2026-10-07 实机：落地/起跳像陷进海绵）。
   double _pendingVertical = 0;
 
-  /// 用一帧的真实 `dt` 驱动：内部按 [PlayerMotion.fixedStep] 固定步长累加。
-  void tick(double dt, InputState input) {
+  /// 用一帧的真实 `dt` 驱动：内部按 [fixedStep] 固定步长累加。
+  void tick(double dt, Input input) {
     // 视角**每帧只应用一次**：`lookDelta` 是"这一帧转了多少"，若放进固定步长
     // 会让灵敏度随帧率浮动。
     if (input.lookDelta.x != 0 || input.lookDelta.y != 0) {
@@ -159,19 +150,19 @@ class PlayerController {
     }
 
     _accumulator +=
-        dt.clamp(0.0, PlayerMotion.fixedStep * PlayerMotion.maxStepsPerFrame);
+        dt.clamp(0.0, fixedStep * maxStepsPerFrame);
     var steps = 0;
-    while (_accumulator >= PlayerMotion.fixedStep &&
-        steps < PlayerMotion.maxStepsPerFrame) {
-      _step(PlayerMotion.fixedStep, input);
-      _accumulator -= PlayerMotion.fixedStep;
+    while (_accumulator >= fixedStep &&
+        steps < maxStepsPerFrame) {
+      _step(fixedStep, input);
+      _accumulator -= fixedStep;
       steps++;
     }
-    if (steps == PlayerMotion.maxStepsPerFrame) _accumulator = 0;
+    if (steps == maxStepsPerFrame) _accumulator = 0;
   }
 
   /// 一个固定步长的物理推进。
-  void _step(double dt, InputState input) {
+  void _step(double dt, Input input) {
     // —— 双击空格切飞行（REF: LocalPlayer.aiStep，jumpTriggerTime=7 刻）——
     final mayfly = abilities?.mayfly ?? false;
     if (mayfly) {
@@ -184,7 +175,7 @@ class PlayerController {
           if (flying && player.onGround) {
             // 原版 `jumpFromGround()`：注入 0.42 格/刻，随后同样被 `Player.travel`
             // 的 ×0.6 收尾——直接写 player.velocity 会被下一步覆盖，故加在刻速度上。
-            _flyVelocity.y += PlayerMotion.jumpVelocity / 20.0;
+            _flyVelocity.y += jumpVelocity / 20.0;
           }
           _jumpTriggerSeconds = 0;
         }
@@ -199,11 +190,11 @@ class PlayerController {
     }
 
     // —— 水平：输入是玩家本地坐标（y 前、x 右），按 yaw 转到世界系 ——
-    final speed = input.sneak
-        ? PlayerMotion.sneakSpeed
+    final speed = input.shift
+        ? sneakSpeed
         : input.sprint
-            ? PlayerMotion.sprintSpeed
-            : PlayerMotion.walkSpeed;
+            ? sprintSpeed
+            : walkSpeed;
     if (input.isMoving) {
       final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
       final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
@@ -225,7 +216,7 @@ class PlayerController {
     // —— 否则每子步都吃一次重力，累积后跳高从1.2522 掉到 0.9969 格（跳不上 1 格）。
     // `_pendingVerticalSteps` 记录"到下一个刻边界还剩几格竖直要积分"。
     final jumpPower =
-        PlayerMotion.jumpVelocity; // 格/秒（= 0.42 格/刻 × 20）
+        jumpVelocity; // 格/秒（= 0.42 格/刻 × 20）
     if (input.jump && player.onGround && !_jumpedThisTick) {
       // `jumpFromGround()`：`Math.max(jumpPower, movement.y)`（源码 2372）——
       // 注入取较大者，MUST NOT 把已有的上升速度改小。
@@ -236,8 +227,8 @@ class PlayerController {
     }
 
     _verticalTickAccum += dt;
-    while (_verticalTickAccum >= PlayerMotion.tickSeconds) {
-      _verticalTickAccum -= PlayerMotion.tickSeconds;
+    while (_verticalTickAccum >= tickSeconds) {
+      _verticalTickAccum -= tickSeconds;
       // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `EntityRenderer` 的 `xOld`）。
       player.yOld = player.position.y;
       _advanceVerticalTick(jumpPower);
@@ -299,7 +290,7 @@ class PlayerController {
         ? _flyTickAccum
         : _verticalTickAccum;
     player.tickProgress =
-        (accum / PlayerMotion.tickSeconds).clamp(0.0, 1.0);
+        (accum / tickSeconds).clamp(0.0, 1.0);
   }
 
   /// 推进一个刻的竖直运动学（REF 见 [PlayerMotion] 的时序注释）。
@@ -311,12 +302,12 @@ class PlayerController {
     // 累加到 `_pendingVertical`，由本帧的下一次 `collision.move` **整块**结算。
     _pendingVertical += _vyTicks;
     // ② 扣重力（`travelInAir`：movementY -= getEffectiveGravity()`）
-    var vy = _vyTicks - PlayerMotion.gravityPerTick;
+    var vy = _vyTicks - gravityPerTick;
     // ③ 乘竖直摩擦（`setDeltaMovement(... * verticalFriction)`）
-    vy *= PlayerMotion.verticalFrictionPerTick;
+    vy *= verticalFrictionPerTick;
     // 下落限速：`terminalVelocity` 是**下落**终端速度（负值，格/秒），换算成格/刻。
-    if (vy < PlayerMotion.terminalVelocity / 20.0) {
-      vy = PlayerMotion.terminalVelocity / 20.0;
+    if (vy < terminalVelocity / 20.0) {
+      vy = terminalVelocity / 20.0;
     }
     _vyTicks = vy;
     player.velocity.y = vy * 20.0; // 对外暴露仍用格/秒
@@ -326,7 +317,7 @@ class PlayerController {
   /// 飞行分支 + `LocalPlayer.aiStep` 的竖直注入 + `Player.getFlyingSpeed`）。
   ///
   /// **原版逐刻递推**（`格/刻` 单位，20 刻/秒；速度源是服务器下发的
-  /// [AbilitiesSnapshot.flyingSpeed]，默认 0.05——`Abilities.DEFAULT_FLYING_SPEED`）：
+  /// [Abilities.flyingSpeed]，默认 0.05——`Abilities.DEFAULT_FLYING_SPEED`）：
   ///
   /// - 水平：`travelInAir` 在不在地面时`blockFriction = 1.0`，故摩擦
   ///   `1.0 × 0.91 = 0.91`；`moveRelative(getFlyingSpeed())` 先注入
@@ -344,19 +335,19 @@ class PlayerController {
   /// **不卡边**（原版 `makeStuckInBlock` 对 `abilities.flying` 豁免）；撞墙时
   /// **不清零速度**（原版 `Entity.move` 只拦位置、不改 deltaMovement，清零会让
   /// 贴墙飞行像"撞停"）。
-  void _flyingStep(double dt, InputState input) {
+  void _flyingStep(double dt, Input input) {
     // `inputYa` = `jump - sneak`（判据 `LocalPlayer.java:834-840`：
     // shift → -1、jump → +1，相加）。
-    final inputYa = (input.jump ? 1.0 : 0.0) - (input.sneak ? 1.0 : 0.0);
+    final inputYa = (input.jump ? 1.0 : 0.0) - (input.shift ? 1.0 : 0.0);
     // 竖直注入量（判据 `LocalPlayer.java:844`）：
     // `inputYa * abilities.getFlyingSpeed() * 3.0F`—— 服务器下发的
     // `Abilities.flyingSpeed`（默认 0.05）× 3 = 0.15 格/刻。
     final flyingSpeedPerTick =
-        (abilities?.flyingSpeed ?? 0.05) * PlayerMotion.flyVerticalInputScale;
+        (abilities?.flyingSpeed ?? 0.05) * flyVerticalInputScale;
 
     _flyTickAccum += dt;
-    while (_flyTickAccum >= PlayerMotion.tickSeconds) {
-      _flyTickAccum -= PlayerMotion.tickSeconds;
+    while (_flyTickAccum >= tickSeconds) {
+      _flyTickAccum -= tickSeconds;
       // 跨刻 ⇒ 上一刻落点成为插值起点（判据 `EntityRenderer.java:164` 的 `yOld`，
       // 原版对飞行实体同样插帧）。
       player.yOld = player.position.y;
@@ -422,9 +413,9 @@ class PlayerController {
 
       // travelInAir（2460/2474）：扣重力 → 乘竖直摩擦。水平同理 × 0.91（airDrag）。
       _flyVelocity.y =
-          (_flyVelocity.y - PlayerMotion.gravityPerTick) * PlayerMotion.verticalFrictionPerTick;
-      _flyVelocity.x *= PlayerMotion.flyFriction;
-      _flyVelocity.z *= PlayerMotion.flyFriction;
+          (_flyVelocity.y - gravityPerTick) * verticalFrictionPerTick;
+      _flyVelocity.x *= flyFriction;
+      _flyVelocity.z *= flyFriction;
 
       // ③ `Player.travel` 飞行收尾（Player.java:1398）：
       //   setDeltaMovement(y = originalMovementY * 0.6)
@@ -432,7 +423,7 @@ class PlayerController {
       // 速度乘 0.6，之前自行解读成"max(injected, afterGravity)"会导致松手时
       // 速度被锁死（实测收敛到 0.0002，飞行变失重悬浮）。
       _flyVelocity.y =
-          _flyVelocityThisTickY * PlayerMotion.flyVerticalRetain;
+          _flyVelocityThisTickY * flyVerticalRetain;
     }
 
     // 位移用**本刻未衰减**的速度（② `move(MoverType.SELF, deltaMovement)`），
@@ -480,27 +471,4 @@ class PlayerController {
 
   /// 飞行速度（`格/刻`；与 [Player.velocity]的 `格/秒` 分开承载）。
   final Vector3 _flyVelocity = Vector3.zero();
-}
-
-
-/// abilities 快照（app 壳每帧从会话同步；纯数据便于控制器单测）。
-class AbilitiesSnapshot {
-  AbilitiesSnapshot({
-    this.mayfly = false,
-    this.flyingSpeed = 0.05,
-    this.walkingSpeed = 0.1,
-  });
-  bool mayfly;
-
-  /// 竖直飞行注入源（判据 `Abilities.flyingSpeed`，`Abilities.java:21`）。
-  double flyingSpeed;
-
-  /// `Attributes.MOVEMENT_SPEED` 的**属性值**（判据 `Abilities.walkingSpeed`，
-  /// `Abilities.java:21`；由 `Player.java:639` 的 `setBaseValue` 写入）。
-  ///
-  /// **它决定水平飞行速度**：`getFlyingSpeed() = getSpeed() × 0.1`
-  /// （`LivingEntity.java:2707`）⇒ 0.1 × 0.1 = 0.01 格/刻。
-  ///
-  /// 早先把水平速度写死 0.1 而不读服务端下发值 ⇒ 换服务器/插件改速时不跟随。
-  double walkingSpeed;
 }

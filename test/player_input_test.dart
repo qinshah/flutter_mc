@@ -1,8 +1,9 @@
 import 'dart:math' as pi_lib;
 import 'package:flutter_mc/game/collision.dart';
-import 'package:flutter_mc/game/input_state.dart';
-import 'package:flutter_mc/game/player.dart';
-import 'package:flutter_mc/game/player_controller.dart';
+import 'package:flutter_mc/world/entity/player/input.dart';
+import 'package:flutter_mc/world/entity/player/player.dart';
+import 'package:flutter_mc/world/entity/player/abilities.dart';
+import 'package:flutter_mc/client/player/local_player.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart';
 
@@ -20,15 +21,15 @@ class EmptyWorld implements CollisionWorld {
 ///
 /// 判据黄金值见下方测试：逐字翻译 `Player.travel` + `LivingEntity` 得
 /// 6.5625 格/秒（原版创造飞行确实很慢，别按"看起来不对"去调）。
-double _flyFor(void Function(InputState) setup, {double flyingSpeed = 0.05}) {
-  final controller = PlayerController(
+double _flyFor(void Function(Input) setup, {double flyingSpeed = 0.05}) {
+  final controller = LocalPlayer(
     world: EmptyWorld(),
     player: Player(),
-    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: flyingSpeed),
+    abilities: Abilities(mayfly: true, flyingSpeed: flyingSpeed),
   );
   controller.player.position.y = 100;
   controller.flying = true;
-  final input = InputState();
+  final input = Input();
   setup(input);
   const dt = 1 / 120;
   for (var i = 0; i < 120; i++) {
@@ -38,15 +39,15 @@ double _flyFor(void Function(InputState) setup, {double flyingSpeed = 0.05}) {
 }
 
 /// 飞行 1 秒后的**水平位移**（yaw=0 时落在 −Z 分量）。
-double _flyForHorizontal(void Function(InputState) setup, {double flyingSpeed = 0.05}) {
-  final controller = PlayerController(
+double _flyForHorizontal(void Function(Input) setup, {double flyingSpeed = 0.05}) {
+  final controller = LocalPlayer(
     world: EmptyWorld(),
     player: Player(),
-    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: flyingSpeed),
+    abilities: Abilities(mayfly: true, flyingSpeed: flyingSpeed),
   );
   controller.player.position.y = 100;
   controller.flying = true;
-  final input = InputState();
+  final input = Input();
   setup(input);
   const dt = 1 / 120;
   for (var i = 0; i < 120; i++) {
@@ -69,13 +70,13 @@ void main() {
 
   test('双击空格：窗口内第二按切换飞行并回调；mayfly=false 不切换', () {
     final toggles = <bool>[];
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: EmptyWorld(),
       player: Player(),
-      abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: 0.05),
+      abilities: Abilities(mayfly: true, flyingSpeed: 0.05),
       onFlyingToggled: toggles.add,
     );
-    final input = InputState();
+    final input = Input();
     const dt = 1 / 120;
 
     // 第一按（1 步）→ 进窗口。
@@ -108,13 +109,13 @@ void main() {
 
   test('mayfly=false：双击无效', () {
     var called = false;
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: EmptyWorld(),
       player: Player(),
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
       onFlyingToggled: (_) => called = true,
     );
-    final input = InputState();
+    final input = Input();
     const dt = 1 / 120;
     input.jump = true;
     controller.tick(dt, input);
@@ -152,7 +153,7 @@ void main() {
     // - 水平：`getFlyingSpeed() = abilities.flyingSpeed`（`Player.java:1952-1958`）
     //   = 0.05 格/刻（疾跑 ×2），经 `moveRelative` 注入。
     final up = _flyFor((i) => i.jump = true);
-    final down = _flyFor((i) => i.sneak = true);
+    final down = _flyFor((i) => i.shift = true);
     expect(up, closeTo(6.5625, 1e-3));
     expect(down, closeTo(-6.5625, 1e-3));
     // **上下严格对称**——这是用户实机反馈的问题（"上升和下降速度不一样"）。
@@ -193,17 +194,17 @@ void main() {
     //   ⇒ 读 `Abilities.flyingSpeed`（默认 0.05）。
     // - 水平：`Player.java:1952-1958` `getFlyingSpeed()` = `abilities.flyingSpeed`
     //   ⇒ 读 `Abilities.flyingSpeed`（疾跑 ×2）。
-    final fast = PlayerController(
+    final fast = LocalPlayer(
       world: EmptyWorld(),
       player: Player(),
-      abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: 0.1),
+      abilities: Abilities(mayfly: true, flyingSpeed: 0.1),
     );
     fast.player.position.y = 100;
     fast.flying = true;
-    final normal = PlayerController(
+    final normal = LocalPlayer(
       world: EmptyWorld(),
       player: Player(),
-      abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: 0.05),
+      abilities: Abilities(mayfly: true, flyingSpeed: 0.05),
     );
     normal.player.position.y = 100;
     normal.flying = true;

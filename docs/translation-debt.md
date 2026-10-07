@@ -95,7 +95,9 @@
 
 | 原版 | 我们 | 问题 |
 |---|---|---|
-| `LivingEntity` + `Player` | `player_controller.dart` | **两个 Java 类塞进一个 Dart 文件**，且改了名 |
+~~`LivingEntity` + `Player` → `player_controller.dart`~~（2026-10-07 已还债：拆为
+`lib/client/player/local_player.dart`（LocalPlayer）、`lib/world/entity/player/` 下的
+`player.dart` / `abilities.dart` / `input.dart`，路径从 `net/minecraft/` 对齐 `lib/`）
 | `KeyMapping` | `key_map.dart` | 改名 |
 | `LevelRenderer` | `mesher.dart` | 改名 |
 | `BlockRenderLayer` | `block_semantics_v262.dart` | 改名 |

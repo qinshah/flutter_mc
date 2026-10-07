@@ -37,6 +37,11 @@ MUST NOT 合并多个 Java 类到一个文件，也 MUST NOT 另造"更达意"�
 （`LivingEntity`+`Player` 不该叫 `player_controller.dart`、`KeyMapping` 不该叫 `key_map.dart`、
 `LevelRenderer` 不该叫 `mesher.dart`）。仅语言惯例必须时（如类型名大小写）才做语法调整。
 
+**路径映射口径：相对根对齐**——Java 文件相对 mc-sources 源码根，Dart 文件相对
+`lib/`，即从 `net/minecraft/` 起逐级对应：
+`net/minecraft/world/entity/player/Player.java` → `lib/world/entity/player/player.dart`；
+`net/minecraft/client/player/LocalPlayer.java` → `lib/client/player/local_player.dart`。
+
 ### 已踩过的坑（都是没做到"逐行"造成的）
 
 | 坑 | 表现 | 教训 |

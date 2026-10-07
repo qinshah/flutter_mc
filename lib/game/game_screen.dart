@@ -12,10 +12,11 @@ import 'package:vector_math/vector_math.dart' as vm;
 import 'block_textures.dart';
 import 'column_section_view.dart';
 import 'engine_space.dart';
-import 'input_state.dart';
+import 'package:flutter_mc/world/entity/player/input.dart';
 import 'key_map.dart';
-import 'player.dart';
-import 'player_controller.dart';
+import 'package:flutter_mc/world/entity/player/player.dart';
+import 'package:flutter_mc/world/entity/player/abilities.dart';
+import 'package:flutter_mc/client/player/local_player.dart';
 import 'session_collision_world.dart';
 import 'sky_model.dart';
 
@@ -87,14 +88,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   final SkyModel _sky = SkyModel();
   GradientSkySource? _skySource;
 
-  /// 输入与物理（3.2）：按键状态 → `InputState` → `PlayerController` → 上行。
-  final InputState _input = InputState();
+  /// 输入与物理（3.2）：按键状态 → `Input` → `LocalPlayer` → 上行。
+  final Input _input = Input();
 
   /// 服务器权威 abilities 快照（AbilitiesUpdated 事件驱动；player-input 切片）。
-  final _abilities = AbilitiesSnapshot();
+  final _abilities = Abilities();
   final Set<LogicalKeyboardKey> _pressed = {};
   final FocusNode _focus = FocusNode();
-  late final PlayerController _controller;
+  late final LocalPlayer _controller;
 
   late final PerspectiveCamera _camera;
 
@@ -129,7 +130,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     super.initState();
     // 失焦清键需要生命周期回调（macOS 失焦后不再收 KeyUp ⇒ 按键永久卡"按下"）。
     WidgetsBinding.instance.addObserver(this);
-    _controller = PlayerController(
+    _controller = LocalPlayer(
       world: SessionCollisionWorld(_columns),
       player: _player,
       abilities: _abilities,
@@ -275,7 +276,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       if (_trace) debugPrint('[KEY] 失焦 → 解除指针捕获');
     }
     if (!KeyMap.releaseAll(_pressed)) return; // 本来就没有按住键
-    // 重算移动意图 ⇒ `InputState` 全部回到"松开"，并同步一次上行，
+    // 重算移动意图 ⇒ `Input` 全部回到"松开"，并同步一次上行，
     // 否则服务器仍认为玩家在前进。
     KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
     _sprintPrevHeld = false;
@@ -304,7 +305,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   void _onKey(KeyEvent event) {
     if (KeyMap.update(_pressed, event)) {
       KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
-      // 边沿 ⇒ 切换加速激活态（用户约定：Ctrl 按一次切换，见 InputState 注释）。
+      // 边沿 ⇒ 切换加速激活态（用户约定：Ctrl 按一次切换，见 Input 注释）。
       if (_input.sprintPressed) {
         _input.toggleSprint();
         if (_trace) debugPrint('[SPRINT] toggle → active=${_input.sprint}');
@@ -644,7 +645,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       left: _input.move.x < 0,
       right: _input.move.x > 0,
       jump: _input.jump,
-      shift: _input.sneak,
+      shift: _input.shift,
       sprint: _input.sprint,
     );
 

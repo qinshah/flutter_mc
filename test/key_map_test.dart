@@ -1,5 +1,5 @@
 import 'package:flutter/services.dart';
-import 'package:flutter_mc/game/input_state.dart';
+import 'package:flutter_mc/world/entity/player/input.dart';
 import 'package:flutter_mc/game/key_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -7,8 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 ///
 /// 键映射抽在 `KeyMap` 里就是为了能这样测——不必起 GPU / SceneView。
 void main() {
-  InputState pressedInput(List<LogicalKeyboardKey> keys) {
-    final input = InputState();
+  Input pressedInput(List<LogicalKeyboardKey> keys) {
+    final input = Input();
     KeyMap.apply(keys.toSet(), input);
     return input;
   }
@@ -48,14 +48,14 @@ void main() {
     expect(pressedInput([LogicalKeyboardKey.space]).jump, isTrue);
     expect(pressedInput([]).jump, isFalse);
 
-    expect(pressedInput([LogicalKeyboardKey.shiftLeft]).sneak, isTrue);
-    expect(pressedInput([LogicalKeyboardKey.shiftRight]).sneak, isTrue);
+    expect(pressedInput([LogicalKeyboardKey.shiftLeft]).shift, isTrue);
+    expect(pressedInput([LogicalKeyboardKey.shiftRight]).shift, isTrue);
   });
 
   group('加速（Ctrl）为切换式：按一次激活、松开移动键取消', () {
     test('按下 Ctrl 产生边沿（sprintPressed），松开不产生', () {
       var prevHeld = false;
-      final input = InputState();
+      final input = Input();
 
       // 第一帧按下 ⇒ 边沿
       KeyMap.apply({LogicalKeyboardKey.controlLeft}, input,
@@ -78,7 +78,7 @@ void main() {
     });
 
     test('松开移动键取消激活', () {
-      final input = InputState()
+      final input = Input()
         ..move.y = 1
         ..toggleSprint();
       expect(input.sprint, isTrue);
@@ -105,7 +105,7 @@ void main() {
 
     test('releaseAll 后移动意图归零（失焦不再产生前进上行）', () {
       final pressed = <LogicalKeyboardKey>{LogicalKeyboardKey.keyW};
-      final input = InputState();
+      final input = Input();
       KeyMap.apply(pressed, input);
       expect(input.isMoving, isTrue,
           reason: '判据：releaseAll 语义是把键视为【松开】，不是忽略');
@@ -114,7 +114,7 @@ void main() {
       KeyMap.apply(pressed, input);
       expect(input.isMoving, isFalse);
       expect(input.jump, isFalse);
-      expect(input.sneak, isFalse);
+      expect(input.shift, isFalse);
       expect(input.sprint, isFalse,
           reason: '失焦时加速（切换式）也应回到未激活');
     });
@@ -135,7 +135,7 @@ void main() {
     test('W 与 ↑ 同按：松开 ↑ 后仍朝前走', () {
       KeyMap.update(pressed, _down(LogicalKeyboardKey.keyW));
       KeyMap.update(pressed, _down(LogicalKeyboardKey.arrowUp));
-      final input = InputState();
+      final input = Input();
       KeyMap.apply(pressed, input);
       expect(input.move.y, 1);
 

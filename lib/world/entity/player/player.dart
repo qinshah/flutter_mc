@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:vector_math/vector_math.dart';
 
-import 'collision.dart';
+import 'package:flutter_mc/game/collision.dart';
 
 /// 玩家状态（移植自 fscraft player.dart，去掉存档面：位置由服务器校正驱动）。
 /// 纯数据 + 纯逻辑：不 import flutter_scene。
@@ -40,7 +40,7 @@ class Player {
   /// 但画面每tick（1/20 秒）才跳一次 ⇒ 高帧率下表现为"一卡一卡地爬"。
   double yOld = 0;
 
-  /// 刻进度 [0,1)：本刻已过的比例，由 [PlayerController] 每子步推进。
+  /// 刻进度 [0,1)：本刻已过的比例，由 [LocalPlayer] 每子步推进。
   double tickProgress = 0;
 
   /// 渲染用的插值位置（脚底）。

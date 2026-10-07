@@ -1,7 +1,8 @@
 import 'package:flutter_mc/game/collision.dart';
-import 'package:flutter_mc/game/input_state.dart';
-import 'package:flutter_mc/game/player.dart';
-import 'package:flutter_mc/game/player_controller.dart';
+import 'package:flutter_mc/world/entity/player/input.dart';
+import 'package:flutter_mc/world/entity/player/player.dart';
+import 'package:flutter_mc/world/entity/player/abilities.dart';
+import 'package:flutter_mc/client/player/local_player.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 无碰撞的假世界（飞行/跳跃运动学测试用；恒不加载=碰撞豁免走联机口径）。
@@ -46,15 +47,15 @@ void main() {
 
   test('跳跃：逐刻递推（先位移后扣重力）峰值越过 1 格', () {
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
 
     const dt = 1 / 120;
-    final input = InputState()..jump = true;
+    final input = Input()..jump = true;
     var peak = 0.0;
     for (var i = 0; i < 60; i++) {
       controller.tick(dt, input);
@@ -70,16 +71,16 @@ void main() {
 
   test('跳跃：端到端跳上 1 格高台子并站住', () {
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     // 站在地面上（脚底 y=0，地面在 by=-1），台子在 +x 方向 x∈[3,5)
     player.position.setValues(0.5, 0.0, 0.5);
 
     const dt = 1 / 120;
-    final input = InputState()
+    final input = Input()
       ..jump = true
       ..move.y = 1; // 向前（yaw=0 朝 -Z，故直接看 y 不变、只测高度）
     var maxY = 0.0;
@@ -97,14 +98,14 @@ void main() {
 
   test('跳跃：按住空格能连续跳（每刻复位注入许可）', () {
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState()..jump = true; // 一直按住
+    final input = Input()..jump = true; // 一直按住
 
     // 统计"重新着地"次数：按住空格时每次落地都应立刻再跳起。
     // （回归防护：`_jumpedThisTick` 曾只置true 不复位 ⇒ 只能跳一次。）
@@ -123,14 +124,14 @@ void main() {
     // 重复用"⇒ 视觉上阶梯式慢速爬升，2026-10-07 实机反馈"像陷进海绵"。
     // 原版 `move(MoverType.SELF, deltaMovement)` 是**一 tick 一次**整块位移。
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState()..jump = true;
+    final input = Input()..jump = true;
 
     var prevY = player.position.y;
     final jumps = <double>[]; // 每帧的 dy，非零的应是"整刻位移"
@@ -155,14 +156,14 @@ void main() {
 
   test('跳跃：落地无下陷——落地后 y 不再抖动', () {
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 3.0, 0.5); // 从 3 格高落下
     const dt = 1 / 120;
-    final input = InputState();
+    final input = Input();
     for (var i = 0; i < 400; i++) {
       controller.tick(dt, input);
     }
@@ -182,15 +183,15 @@ void main() {
     // `state.y = Mth.lerp(partialTicks, entity.yOld, entity.getY())`——
     // **对所有实体一律插帧，不区分是否飞行**。
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpEmptyWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: true),
+      abilities: Abilities(mayfly: true),
     );
     controller.flying = true;
     player.position.setValues(0.5, 200.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState()..jump = true;
+    final input = Input()..jump = true;
 
     // 物理台阶数 vs 渲染变化帧数
     var physSteps = 0;
@@ -217,14 +218,14 @@ void main() {
   test('插帧：跳跃态 tickProgress 在 (0,1) 内循环', () {
     // 回归防护：`tickProgress` 曾只有赋值点、无推进点 ⇒ 恒为 0、插帧形同虚设。
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState()..jump = true;
+    final input = Input()..jump = true;
     var sawFraction = false;
     var sawReset = false;
     var prev = -1.0;
@@ -244,14 +245,14 @@ void main() {
   test('失焦下落：终端速度不超原版、落地速度归零', () {
     // 判据 `AABB.EPSILON = 1.0E-7`（AABB.java:14）；终端速度 -78.4 格/秒。
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 3.0, 0.5); // 3 格高自由下落
     const dt = 1 / 120;
-    final input = InputState(); // 失焦后典型状态：不按任何键
+    final input = Input(); // 失焦后典型状态：不按任何键
     var maxFallPerFrame = 0.0;
     var prevY = player.position.y;
     for (var i = 0; i < 400; i++) {
@@ -275,14 +276,14 @@ void main() {
     // `Mth.lerp(partialTicks, entity.xOld, entity.getX())`。原版物理跑 20Hz，
     // 渲染靠上一刻→当前刻的插值保持顺滑；缺插值会"一卡一卡地爬"。
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState()..jump = true;
+    final input = Input()..jump = true;
 
     // 物理位置的台阶数（应远少于帧数）
     var physSteps = 0;
@@ -309,14 +310,14 @@ void main() {
 
   test('跳跃：落地后竖直速度归零（不残留影响下次起跳）', () {
     final player = Player();
-    final controller = PlayerController(
+    final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
-      abilities: AbilitiesSnapshot(mayfly: false),
+      abilities: Abilities(mayfly: false),
     );
     player.position.setValues(0.5, 0.0, 0.5);
     const dt = 1 / 120;
-    final input = InputState();
+    final input = Input();
     for (var i = 0; i < 30; i++) {
       controller.tick(dt, input);
     }

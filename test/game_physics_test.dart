@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart';
 
 import 'package:flutter_mc/game/collision.dart';
-import 'package:flutter_mc/game/player.dart';
+import 'package:flutter_mc/world/entity/player/player.dart';
 
 // ---------------------------------------------------------------------------
 // 测试常量（对照 mc-sources/minecraft-26.2 只读参考源码）

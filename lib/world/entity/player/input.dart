@@ -7,11 +7,11 @@ import 'package:vector_math/vector_math.dart';
 /// - `move` 是**玩家本地坐标**：`y` = 前后（+1 前）、`x` = 左右（+1 右）——
 ///   原版 `player.xxa`（左右）/`zzz`（前后）同一口径
 /// - `jump` = 原版 `KeyMapping` 的 `key.jump`（空格）
-/// - `sneak` / `sprint` = 原版 `key.shift` / `key.sprint`（本切片只用它们影响速度）
+/// - `shift` / `sprint` = 原版 `key.shift` / `key.sprint`（本切片只用它们影响速度）
 /// - `lookDelta` 是**这一帧转了多少**（鼠标位移，不是绝对角度），
 ///   与 `Player.applyLook` 的入参同一口径
-class InputState {
-  InputState();
+class Input {
+  Input();
 
   /// 本地移动意图：`x` 右为正，`y` 前为正（两者都在 [-1,1]）。
   final Vector2 move = Vector2.zero();
@@ -20,7 +20,7 @@ class InputState {
   final Vector2 lookDelta = Vector2.zero();
 
   bool jump = false;
-  bool sneak = false;
+  bool shift = false;
 
   /// 加速（跑/飞）激活态 —— **切换式**，非按住式。
   ///
@@ -40,7 +40,7 @@ class InputState {
 
   bool get isMoving => move.x != 0 || move.y != 0;
 
-  /// 切换加速态（Ctrl 边沿）。[PlayerController] 每帧调用。
+  /// 切换加速态（Ctrl 边沿）。[LocalPlayer] 每帧调用。
   void toggleSprint() {
     sprintToggle = !sprintToggle;
   }
