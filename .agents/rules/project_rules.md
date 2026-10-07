@@ -31,7 +31,15 @@
 
 ## 提交信息
 
-- 遵循 Conventional Commits：`<type>(<scope>): <subject>`
-- type 取 feat / fix / docs / build / chore / refactor / test
+遵循 Conventional Commits（https://www.conventionalcommits.org/zh-hans/v1.0.0/）：
+
+- `<type>(<scope>): <subject>`；type 取 feat / fix / docs / build / chore / refactor / test
 - scope 用包名或区域（如 `mc_wire`、`tool`、`openspec`）；跨多包的搬入类提交可用 `packages`
-- subject 用中文一行说清"做了什么"；正文按需补充动机与验证结果（测试计数、分析结果）
+- subject 用中文一行说清"做了什么"
+- **正文（body）可选，默认不写**。确有必要时只写一两句改动本身的上下文（动机、影响）；
+  MUST NOT 写：分析过程、判据行号考证、递推/黄金值推导、测试计数与验证流水账——
+  这些属于代码注释和 PR 描述，不属于提交信息
+- **以正常开发者的视角撰写**：想象是给同事看的提交，不是 AI 的会话记录。
+  - 用简洁的陈述/祈使句（"修复 X""改为 Y"），不用第一人称叙事（"我发现了…"
+    "让我来…"）
+  - 禁止表情符号、感叹号堆叠、对用户的致谢或自我致歉

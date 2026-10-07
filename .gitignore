@@ -99,6 +99,9 @@ dist/
 /.zcodeignore
 .zcode
 
+# AI 会话工作日志：机器本地状态，不入库（2026-10-07 取消跟踪，文件保留在本地）。
+/.agents/memory/
+
 # 官方 client jar 提取产物（版权：不入库；工具 tool/extract_assets.dart，按版本并列）
 /assets/vanilla/*
 !/assets/vanilla/.gitkeep
