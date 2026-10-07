@@ -30,5 +30,5 @@
   （`keyboard_listener.dart:77`）⇒ 事件按文档 "propagated to … even non-Flutter ones"
   漏回 macOS。改用 `Focus` + 返回 `handled` 阻断冒泡，语义对齐原版 GLFW 独占消费
   （判据 `KeyMapping.click/set`，`KeyMapping.java:30/34`）。
-- [ ] 4.3 真机（**需用户**）：按住 W 切到别的应用再切回，确认不再自动前进且能立即
-      重新按住 W（验证 `releaseAll` 那条路径）；此路径无法自动验证
+- [x] 4.3 真机（用户 2026-10-07 确认"input-focus 没问题了"）：按住 W 切到别的应用
+      再切回，不再自动前进、键盘立即可用、无系统按键提示音。`releaseAll` 路径验证通过。
