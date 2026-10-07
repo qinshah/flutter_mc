@@ -1,4 +1,3 @@
-import 'dart:math' as pi_lib;
 import 'package:flutter_mc/game/collision.dart';
 import 'package:flutter_mc/game/input_state.dart';
 import 'package:flutter_mc/game/player.dart';
@@ -94,6 +93,29 @@ void main() {
       }
     }
     expect(maxY, greaterThan(1.0));
+  });
+
+  test('跳跃：按住空格能连续跳（每刻复位注入许可）', () {
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 0.0, 0.5);
+    const dt = 1 / 120;
+    final input = InputState()..jump = true; // 一直按住
+
+    // 统计"重新着地"次数：按住空格时每次落地都应立刻再跳起。
+    // （回归防护：`_jumpedThisTick` 曾只置true 不复位 ⇒ 只能跳一次。）
+    var touchdowns = 0;
+    var wasOnGround = false;
+    for (var i = 0; i < 360; i++) {
+      controller.tick(dt, input);
+      if (player.onGround && !wasOnGround) touchdowns++;
+      wasOnGround = player.onGround;
+    }
+    expect(touchdowns, greaterThanOrEqualTo(2));
   });
 
   test('跳跃：落地后竖直速度归零（不残留影响下次起跳）', () {

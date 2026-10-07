@@ -201,7 +201,15 @@ class PlayerController {
     while (_verticalTickAccum >= PlayerMotion.tickSeconds) {
       _verticalTickAccum -= PlayerMotion.tickSeconds;
       _advanceVerticalTick(jumpPower);
+      // 新的一刻⇒ 允许再次注入跳跃初速（原版 `noJumpDelay = 10` 是 10 刻冷却，
+      // 本期只保证"每刻至多注入一次"，按住空格即可连续跳）。
+      _jumpedThisTick = false;
     }
+
+    // 对外暴露的竖直速度 = 刻速度 ×20（与 [Player.velocity] 的格/秒口径一致）。
+    // 必须在碰撞**之前**同步：位移用的是 `_vyTicks`，而 `player.velocity.y`
+    // 是给上层（渲染/上行/探针）读的，不同步会出现"在飞但 vy 显示 0"。
+    player.velocity.y = _vyTicks * 20.0;
 
     // —— 位移与碰撞 ——（`VoxelCollision.move` 内部已按最长轴拆子步）
     // 竖直位移用**本刻未扣重力**的刻速度 `_vyTicks`（原版 `move()` 在
