@@ -69,6 +69,59 @@ class BlockModels {
     'block/template_seagrass',
   };
 
+  /// 读模型 JSON 原文（形如 `block/oak_slab_top`；缺失返回 null）。
+  ///
+  /// 给[ModelGeometryParser] 当数据源——解析器只认"按模型路径读 JSON"这一件事，
+  /// 不需要知道资源包来源。
+  Future<String?> modelJson(String modelPath) =>
+      _pack.readString('models/${_stripNs(modelPath)}.json');
+
+  /// 按 **state 变体**解析模型路径（形如 `block/oak_slab_top`）。
+  ///
+  /// [variantKey] 是 blockstate `variants` 的键（如 `type=top`）；传 null 时取
+  /// 首个变体。半砖/楼梯这类**同一方块不同变体走不同模型**（几何也不同），
+  /// 故几何解析必须按变体来，不能只取首个。
+  ///
+  /// 判据：`blockstates/*.json` 的 `variants` 结构（值可以是单模型或模型数组）。
+  Future<String?> modelPathForVariant(String blockId, String? variantKey) async {
+    final name = blockId.split(':').last;
+    final stateText = await _pack.readString('blockstates/$name.json');
+    if (stateText == null) return null;
+    final state = jsonDecode(stateText) as Map<String, dynamic>;
+
+    final variants = state['variants'];
+    if (variants is Map<String, dynamic> && variants.isNotEmpty) {
+      Object? entry;
+      if (variantKey != null && variants.containsKey(variantKey)) {
+        entry = variants[variantKey];
+      } else {
+        entry = variants.values.first;
+      }
+      return _modelOfVariantEntry(entry);
+    }
+    final multipart = state['multipart'];
+    if (multipart is List && multipart.isNotEmpty) {
+      final first = multipart.first;
+      if (first is Map<String, dynamic>) return _modelOfVariantEntry(first);
+    }
+    return null;
+  }
+
+  /// `variants` 的值 → 模型路径（值可能是单模型对象或模型对象数组，取首个）。
+  static String? _modelOfVariantEntry(Object? entry) {
+    if (entry is Map<String, dynamic>) {
+      final m = entry['model'];
+      if (m is String) return m;
+      if (m is List) {
+        final first = m.whereType<Map<String, dynamic>>().toList();
+        if (first.isNotEmpty) return first.first['model'] as String?;
+      }
+      final apply = entry['apply'];
+      if (apply is Map<String, dynamic>) return _modelOfVariantEntry(apply);
+    }
+    return null;
+  }
+
   /// 该方块的模型是否**十字面片**（cross）。
   ///
   /// **为什么用它替代手写名单**：原版把"方块 → 渲染层"的完整注册表放在

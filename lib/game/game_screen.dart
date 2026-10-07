@@ -158,9 +158,19 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     // `BlockSemanticsV262` 类文档）。
     if (textures != null) {
       final cross = await textures.buildCrossBlockSet();
-      _semantics = MeshSemanticsCache(BlockSemanticsV262(crossBlocks: cross));
+      // 真实几何（block-geometry A）：按模型 `elements` 的 AABB 出面，
+      // 竹子/半砖/楼梯/藤蔓/睡莲不再被拉成整方块。判据 `CuboidModelElement.java:22`
+      // + `FaceBakery.java:131`；带 rotation 的模型不注入（本网格器不支持旋转，
+      // 见 `BlockGeometryMesh.hasUnsupportedRotation`），那些方块显式回退整方块。
+      final geometry = await textures.buildGeometryMap();
+      _semantics = MeshSemanticsCache(BlockSemanticsV262(
+        crossBlocks: cross,
+        geometryByState: geometry,
+      ));
       if (_trace) {
         debugPrint('[SEM] 判据驱动的 cross 方块 ${cross.length} 个');
+        debugPrint('[SEM] 真实几何 state ${geometry.length} 个；'
+            '因rotation 未注入 ${textures.geometryRotationSkipped} 个');
       }
     }
     if (_trace) {

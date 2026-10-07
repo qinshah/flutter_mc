@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'block_geometry_mesh.dart';
 import 'chunk_mesh_data.dart';
 import 'mesh_semantics.dart';
 import 'uv_rect.dart';
@@ -10,8 +11,21 @@ import 'uv_rect.dart';
 /// 绕序反向发射（flutter_scene 0.23+ 顺时针为正面）、面朝向明暗（顶1.0/底0.5/
 /// 南北0.8/东西0.6）、UV 按面翻回 z 镜像。
 ///
-/// **首版简化**（design D2）：整块立方体 + 面剔除；无 AO/平滑光照/非常规形状
-/// （半砖/楼梯按整块）；流体族内部面剔除按"同名流体"近似。
+/// ## 几何：按模型 `elements` 出面（判据 `CuboidModelElement` / `FaceBakery`）
+///
+/// 方块若注入了真实几何（[MeshSemantics.geometryOf]），按其 AABB 逐面发射——
+/// **只画模型 `faces` 声明的面**（判据 `CuboidModelElement.java:114-118`：
+/// `faces` 为空原版抛异常，未声明的面不画）。竹子（2×16×2 细柱）、半砖
+/// （下半格）、楼梯（2~3 个 box）、藤蔓（零厚度薄板）、睡莲（贴地薄片）
+/// 因此不再被拉成整方块。
+///
+/// **仍未支持**（MUST NOT 静默按未旋转渲染，见 [BlockGeometryMesh.hasUnsupportedRotation]）：
+/// 带 `rotation` 的 95 个模型（铁轨、告示牌、作物等）回退整方块。
+///
+/// ## 仍存在的简化
+///
+/// 无 AO / 平滑光照 / lightmap（见 `docs/translation-debt.md`）；
+/// 流体族内部面剔除按"同名流体"近似。
 ///
 /// 纯计算：不 import flutter_scene，可在 worker isolate 运行。
 
@@ -148,6 +162,26 @@ ChunkMesh meshSection(
 
         if (isCross) {
           _emitCross(builders, layer, semantics, state, lx, ly, lz, uvFor);
+          continue;
+        }
+
+        // 真实几何路径（判据 `CuboidModelElement.java:22` + `FaceBakery.java:131`）。
+        // 有几何且不是"单 box 覆盖整格"时按 AABB 出面；带 rotation 的模型回退整方块
+        // （MUST NOT 静默按未旋转渲染，见 BlockGeometryMesh 文档）。
+        final geometry = semantics.geometryOf(state);
+        if (!geometry.isNone &&
+            !geometry.isSingleFullBlock &&
+            !geometry.hasUnsupportedRotation) {
+          _emitBoxes(
+            builders,
+            layer,
+            state,
+            geometry,
+            lx,
+            ly,
+            lz,
+            uvFor,
+          );
           continue;
         }
 
@@ -357,6 +391,125 @@ void _emitFace(
     );
   }
   builder.addQuadIndices(base);
+}
+
+/// 按模型 `elements` 的 AABB 逐面发射（判据 `CuboidModelElement.java:22`
+/// 的 `from`/`to` + `faces` 表；坐标已由解析侧除 16 归一化，同
+/// `FaceBakery.java:131` 的 `div(16.0F)`）。
+///
+/// **只画 `faces` 声明的面**（判据 `CuboidModelElement.java:114-118`：`faces`
+/// 为空原版抛异常；未声明的面原版不画）。藤蔓只声明 `north`/`south`、
+/// 睡莲只声明 `down`/`up`，照此执行。
+///
+/// UV：模型的局部 UV（已归一化到 0..1 相对该面贴图）按
+/// [uvFor] 给出的 sprite 矩形**取子矩形**——判据 `FaceBakery.java:40-49`
+/// 同样是把 `CuboidFace.UVs`（0..16）÷16 后再按 sprite 尺寸映射。
+void _emitBoxes(
+  Map<RenderLayer, _LayerBuilder> builders,
+  RenderLayer layer,
+  int state,
+  BlockGeometryMesh geometry,
+  int lx,
+  int ly,
+  int lz,
+  UvRect Function(int stateId, BlockFace face) uvFor,
+) {
+  final builder = builders.putIfAbsent(layer, _LayerBuilder.new);
+  for (final box in geometry.boxes) {
+    for (final face in box.faces) {
+      final dir = _faceByName(face.direction);
+      // 模型未声明的面已在解析侧过滤；这里再兜一层，避免脏数据落到 _faceByName
+      // 的 null 分支后静默画错面。
+      if (dir == null) continue;
+      final sprite = uvFor(state, dir);
+      final shade = _shadeFor(dir);
+
+      // 该面在 box 上的 4 个角（世界右手系，法线朝外，逆时针），格式与
+      // `_corners` 一致：`[x, y, z, u, v]`。u/v 是**面内归一化**坐标
+      // （0..1），再按 face.uv 取 sprite 子矩形。
+      final corners = _boxCorners(box, dir);
+      final base = builder.vertexCount;
+      for (final c in corners) {
+        // 面的局部 UV 矩形（0..1，相对整张贴图）。
+        final lu = face.u1 + (face.u2 - face.u1) * c[3];
+        final lv = face.v1 + (face.v2 - face.v1) * c[4];
+        // 映射进 sprite 的子矩形。纹理 v 轴朝下（图集左上原点）：局部 v 增大
+        // 对应图集 v 增大，与 `_emitFace` 的 `cv` 语义一致（此处不做翻转，
+        // 因为模型 UV 的 v 已是"从上往下"的原版口径）。
+        builder.addVertex(
+          lx + c[0],
+          ly + c[1],
+          _mirrorZ(lz + c[2]),
+          _offsets[dir]![0].toDouble(),
+          _offsets[dir]![1].toDouble(),
+          _mirrorZ(_offsets[dir]![2]),
+          sprite.minU + sprite.width * lu,
+          sprite.minV + sprite.height * lv,
+          shade,
+        );
+      }
+      builder.addQuadIndices(base);
+    }
+  }
+}
+
+/// 名字 → [BlockFace]（几何侧用字符串，见 `BoxFace.direction` 的说明）。
+BlockFace? _faceByName(String name) => switch (name) {
+      'down' => BlockFace.down,
+      'up' => BlockFace.up,
+      'north' => BlockFace.north,
+      'south' => BlockFace.south,
+      'west' => BlockFace.west,
+      'east' => BlockFace.east,
+      _ => null,
+    };
+
+/// 一个 box 在某面上的 4 角：`[x, y, z, u, v]`，v 向下为 0（贴图原点在左上）。
+///
+/// 与 [_corners] 的差别：位置来自 box 的 `from`/`to` 而非整格 0/1；
+/// u/v 的排布沿用整格的约定（与 `_emitFace` 的 `_uvFlip` 配合保持一致观感）。
+List<List<double>> _boxCorners(BoxGeometry box, BlockFace dir) {
+  final x0 = box.fromX, y0 = box.fromY, z0 = box.fromZ;
+  final x1 = box.toX, y1 = box.toY, z1 = box.toZ;
+  return switch (dir) {
+    // 东面（+X）：由 z 从大到小、y 从小到大，右手系外法线 +X。
+    BlockFace.east => [
+        [x1, y0, z1, 1, 1],
+        [x1, y0, z0, 0, 1],
+        [x1, y1, z0, 0, 0],
+        [x1, y1, z1, 1, 0],
+      ],
+    BlockFace.west => [
+        [x0, y0, z0, 0, 1],
+        [x0, y0, z1, 1, 1],
+        [x0, y1, z1, 1, 0],
+        [x0, y1, z0, 0, 0],
+      ],
+    BlockFace.up => [
+        [x0, y1, z1, 0, 1],
+        [x1, y1, z1, 1, 1],
+        [x1, y1, z0, 1, 0],
+        [x0, y1, z0, 0, 0],
+      ],
+    BlockFace.down => [
+        [x0, y0, z0, 0, 1],
+        [x1, y0, z0, 1, 1],
+        [x1, y0, z1, 1, 0],
+        [x0, y0, z1, 0, 0],
+      ],
+    BlockFace.south => [
+        [x0, y0, z1, 0, 1],
+        [x1, y0, z1, 1, 1],
+        [x1, y1, z1, 1, 0],
+        [x0, y1, z1, 0, 0],
+      ],
+    BlockFace.north => [
+        [x1, y0, z0, 1, 1],
+        [x0, y0, z0, 0, 1],
+        [x0, y1, z0, 0, 0],
+        [x1, y1, z0, 1, 0],
+      ],
+  };
 }
 
 void _emitCross(

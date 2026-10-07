@@ -7,5 +7,6 @@
 library;
 
 export 'src/atlas_uv.dart';
+export 'src/block_geometry.dart';
 export 'src/block_models.dart';
 export 'src/vanilla_pack.dart';

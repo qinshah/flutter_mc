@@ -6,6 +6,7 @@
 /// 首版简化：整块立方体 + 面剔除，无 AO/平滑光照（见 mesher.dart 文件头）。
 library;
 
+export 'src/block_geometry_mesh.dart';
 export 'src/block_semantics_v262.dart';
 export 'src/chunk_mesh_data.dart';
 export 'src/mesh_semantics.dart';

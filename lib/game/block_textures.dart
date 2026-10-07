@@ -107,6 +107,122 @@ class BlockTextures {
     return result;
   }
 
+  /// 构建期扫描全部方块，得出**stateId → 真实几何**表（判据驱动，供
+  /// `BlockSemanticsV262.geometryByState` 注入，让网格器按模型 `elements` 出面）。
+  ///
+  /// 判据（`net/minecraft.client.resources.model.cuboid`）：
+  /// - `CuboidModelElement.java:22/51-52` —— `elements[].from/to`（0..16 坐标）
+  /// - `CuboidModelElement.java:114-118` —— `faces` 为空原版抛异常 ⇒ **只画声明的面**
+  /// - `FaceBakery.java:131` —— 顶点 `div(16.0F)` 归一化到 0..1
+  ///
+  /// **按 state 变体解析**：半砖 `type=bottom`/`type=top`、楼梯 `shape=*`/
+  /// `facing=*` 走**不同模型**（几何也不同），故按 `variantKey` 取模型路径，
+  /// 不能只取首个变体。
+  ///
+  /// 带 `rotation` 的模型**不注入**几何（本网格器不支持旋转，见
+  /// `BlockGeometry.hasUnsupportedRotation`）——那些方块会退回整方块路径，
+  /// **不会**静默按未旋转渲染。
+  Future<Map<int, BlockGeometryMesh>> buildGeometryMap() async {
+    final result = <int, BlockGeometryMesh>{};
+    var rotationSkipped = 0;
+    // **按模型路径去重**：模型只有两千余个，而 state 有 32366 个——同一模型被
+    // 几百个 state 复用（所有石砖变体都指向 `block/stone_bricks`）。不缓存会
+    // 重复读同一 JSON 六万余次、耗时 6.4 秒（实测），足以卡住启动。
+    final byModel = <String, BlockGeometryMesh>{};
+    final pending = <String, Future<BlockGeometryMesh?>>{};
+
+    Future<BlockGeometryMesh?> geometryOf(String modelPath) {
+      return pending.putIfAbsent(modelPath, () async {
+        final parser = ModelGeometryParser((p) => _models.modelJson(p));
+        final geo = await parser.parse(modelPath);
+        if (geo.isEmpty || geo.unsupportedRotation) return null;
+        return _toRenderGeometry(geo);
+      });
+    }
+
+    for (final entry in kBlockStateIdentity262.entries) {
+      final identity = entry.value;
+      final variantKey = _variantKeyOfIdentity(identity);
+      final name = BlockSemanticsV262.blockNameOfStateIdentity(identity);
+      if (name.isEmpty || name == 'unknown') continue;
+      final modelPath = await _models.modelPathForVariant(
+        'minecraft:$name',
+        variantKey,
+      );
+      if (modelPath == null) continue;
+      final key = modelPath.split(':').last;
+      final cached = byModel[key];
+      if (cached != null) {
+        if (cached == BlockGeometryMesh.none) {
+          rotationSkipped++;
+        } else {
+          result[entry.key] = cached;
+        }
+        continue;
+      }
+      final mesh = await geometryOf(key);
+      if (mesh == null) {
+        // 无几何、或带 rotation（本网格器不支持旋转 ⇒ 显式回退整方块，
+        // **MUST NOT 静默按未旋转渲染**，见 BlockGeometryMesh 文档）。
+        byModel[key] = BlockGeometryMesh.none;
+        rotationSkipped++;
+        continue;
+      }
+      byModel[key] = mesh;
+      result[entry.key] = mesh;
+    }
+    _geometryRotationSkipped = rotationSkipped;
+    return result;
+  }
+
+  /// 因模型带 rotation 而未注入几何的方块数（`--dart-define=TRACE=true` 时打印，
+  /// 让"这些方块仍是整方块"成为**可见事实**而非静默回退）。
+  int _geometryRotationSkipped = 0;
+  int get geometryRotationSkipped => _geometryRotationSkipped;
+
+  /// `mc_resource` 的解析结果 → `mc_render` 的网格器契约（[BlockGeometryMesh]）。
+  ///
+  /// 两侧各有自己的类型（包纯度：`mc_render` 只依赖 `mc_nbt`，不依赖
+  /// `mc_resource`），故在此转换。解析侧叫 `BlockGeometry`，网格器契约侧叫
+  /// `BlockGeometryMesh`——刻意不同名，避免 app 壳同时 import 两个包时符号冲突。
+  static BlockGeometryMesh _toRenderGeometry(BlockGeometry src) {
+    if (src.isEmpty) return BlockGeometryMesh.none;
+    return BlockGeometryMesh(
+      boxes: src.boxes
+          .map((b) => BoxGeometry(
+                fromX: b.from.x,
+                fromY: b.from.y,
+                fromZ: b.from.z,
+                toX: b.to.x,
+                toY: b.to.y,
+                toZ: b.to.z,
+                faces: [
+                  for (var i = 0; i < b.faces.length; i++)
+                    BoxFace(
+                      direction: b.faces[i],
+                      u1: b.uvs[i].u1,
+                      v1: b.uvs[i].v1,
+                      u2: b.uvs[i].u2,
+                      v2: b.uvs[i].v2,
+                    ),
+                ],
+              ))
+          .toList(growable: false),
+      hasUnsupportedRotation: src.unsupportedRotation,
+    );
+  }
+
+  /// `minecraft:oak_slab[type=top]` → `type=top`（blockstate `variants` 的键）。
+  ///
+  /// 身份串的属性顺序按官方 data generator 的输出稳定，直接以原样作键查表；
+  /// 查不到时 [BlockModels.modelPathForVariant] 会退回首变体。
+  static String? _variantKeyOfIdentity(String identity) {
+    final lb = identity.indexOf('[');
+    final rb = identity.lastIndexOf(']');
+    if (lb < 0 || rb <= lb) return null;
+    return identity.substring(lb + 1, rb);
+  }
+
   /// 资源包里全部方块名（来自 blockstates 目录清单）。
   ///
   /// [VanillaPack] 未暴露"列目录"，故用**已知方块清单**兜底：取自区块调色板

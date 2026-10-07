@@ -1,5 +1,6 @@
-import 'state_identity_26_2.dart';
+import 'block_geometry_mesh.dart';
 import 'mesh_semantics.dart';
+import 'state_identity_26_2.dart';
 
 /// 26.2 的网格语义实现：stateId → 身份串（官方 data generator 生成的
 /// `state_identity_26_2.dart`，32366 个 state 与区块调色板同一注册表）
@@ -22,7 +23,17 @@ class BlockSemanticsV262 implements MeshSemantics {
   const BlockSemanticsV262({
     this.crossBlocks = const {},
     this.flatGroundCover = const {},
+    this.geometryByState = const {},
   });
+
+  /// **判据驱动**的方块几何（stateId → 模型 `elements`），构建期注入。
+  ///
+  /// 判据`CuboidModelElement.java:22/51-52` + `FaceBakery.java:131`：
+  /// `elements[].from/to` 是 0..16 坐标，烘焙时除 16 归一化。
+  ///
+  /// 未注入（默认空表）时 [geometryOf] 一律返回 [BlockGeometryMesh.none]，
+  /// 网格器退回整方块路径——保持旧行为不变，便于逐能力推进与回归对比。
+  final Map<int, BlockGeometryMesh> geometryByState;
 
   /// **判据驱动**的十字面片方块名集合（构建期由模型 parent 链推导后注入）。
   ///
@@ -130,6 +141,10 @@ class BlockSemanticsV262 implements MeshSemantics {
         !_isCrossName(name) &&
         !_isFlatGroundCover(name);
   }
+
+  @override
+  BlockGeometryMesh geometryOf(int stateId) =>
+      geometryByState[stateId] ?? BlockGeometryMesh.none;
 
   @override
   String nameOf(int stateId) => blockNameOf(stateId);
