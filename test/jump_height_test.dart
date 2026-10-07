@@ -176,6 +176,100 @@ void main() {
     expect(player.velocity.y, 0);
   });
 
+  test('插帧：飞行态也插值（原版对所有实体一律插值）', () {
+    // 回归防护：曾只给行走/跳跃更新 `yOld`，飞行态完全没有插帧 ⇒ 20Hz 台阶。
+    // 判据 `EntityRenderer.extractRenderState`（`EntityRenderer.java:164`）：
+    // `state.y = Mth.lerp(partialTicks, entity.yOld, entity.getY())`——
+    // **对所有实体一律插帧，不区分是否飞行**。
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpEmptyWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: true),
+    );
+    controller.flying = true;
+    player.position.setValues(0.5, 200.0, 0.5);
+    const dt = 1 / 120;
+    final input = InputState()..jump = true;
+
+    // 物理台阶数 vs 渲染变化帧数
+    var physSteps = 0;
+    var prevPhys = player.position.y;
+    var renderFrames = 0;
+    var prevEye = player.eyePosition.y;
+
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, input);
+      final phys = player.position.y;
+      if ((phys - prevPhys).abs() > 1e-9) physSteps++;
+      prevPhys = phys;
+      final eye = player.eyePosition.y;
+      if ((eye - prevEye).abs() > 1e-6) renderFrames++;
+      prevEye = eye;
+    }
+    expect(physSteps, lessThan(20), reason: '物理是 20Hz ⇒ 60 帧内约 10 步');
+    expect(renderFrames, greaterThan(physSteps * 2),
+        reason: '渲染须在物理台阶之间连续变化 ⇒ 不卡顿');
+    expect(player.tickProgress, greaterThan(0),
+        reason: 'tickProgress 必须被推进，否则插值退化回物理位置');
+  });
+
+  test('插帧：跳跃态 tickProgress 在 (0,1) 内循环', () {
+    // 回归防护：`tickProgress` 曾只有赋值点、无推进点 ⇒ 恒为 0、插帧形同虚设。
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 0.0, 0.5);
+    const dt = 1 / 120;
+    final input = InputState()..jump = true;
+    var sawFraction = false;
+    var sawReset = false;
+    var prev = -1.0;
+    for (var i = 0; i < 120; i++) {
+      controller.tick(dt, input);
+      final tp = player.tickProgress;
+      expect(tp, inInclusiveRange(0.0, 1.0), reason: '插值进度须在 [0,1]');
+      if (tp > 0.0 && tp < 1.0) sawFraction = true;
+      // 每跨刻accum 归零 ⇒ 进度应出现"回落"（比上一帧小）。
+      if (prev > 0.0 && tp < prev) sawReset = true;
+      prev = tp;
+    }
+    expect(sawFraction, isTrue, reason: '应出现刻内的小数进度（插帧生效）');
+    expect(sawReset, isTrue, reason: '每跨刻插值进度应回落（累加器归零）');
+  });
+
+  test('失焦下落：终端速度不超原版、落地速度归零', () {
+    // 判据 `AABB.EPSILON = 1.0E-7`（AABB.java:14）；终端速度 -78.4 格/秒。
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 3.0, 0.5); // 3 格高自由下落
+    const dt = 1 / 120;
+    final input = InputState(); // 失焦后典型状态：不按任何键
+    var maxFallPerFrame = 0.0;
+    var prevY = player.position.y;
+    for (var i = 0; i < 400; i++) {
+      controller.tick(dt, input);
+      final y = player.position.y;
+      final dy = prevY - y;
+      if (dy > maxFallPerFrame) maxFallPerFrame = dy;
+      prevY = y;
+      if (player.onGround && i > 10) break;
+    }
+    expect(player.onGround, isTrue);
+    expect(player.velocity.y, 0);
+    // 终端 78.4 格/秒 ⇒ 单帧(1/120s) 上限 0.65333 格
+    expect(maxFallPerFrame, lessThanOrEqualTo(78.4 / 120 + 1e-9));
+    // 落地静止时脚底应贴面（epsilon = 1e-7 量级，不是 1e-4）
+    expect(player.position.y.abs(), lessThan(1e-6));
+  });
+
   test('渲染：物理 20Hz 阶梯但渲染位置线性插值（不卡顿）', () {
     // 判据 `EntityRenderer.createRenderState`（mc-sources/minecraft-26.2:164）：
     // `Mth.lerp(partialTicks, entity.xOld, entity.getX())`。原版物理跑 20Hz，

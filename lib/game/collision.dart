@@ -75,7 +75,12 @@ class MoveResult {
 /// **联机构造必须 `unloadedPassable: true`**：原版客户端在未加载区可走，
 /// 掉落由服务器权威位置回拉纠正；否则视距边缘会出现隐形空气墙。
 class VoxelCollision {
-  VoxelCollision(this.world, {this.epsilon = 1e-4, this.unloadedPassable = true});
+  /// 贴地/贴墙时留的数值间隙。
+  ///
+  /// **判据 `AABB.EPSILON = 1.0E-7`**（`AABB.java:14`）—— 原版正是用这个量级
+  /// 让碰撞解算后不留穿透。早先用 `1e-4`（放大 1000 倍）⇒ 落地静止时脚底停在
+  /// `y = 0.0001` 而非 0，且贴墙时会离面 0.1 毫米。照抄原版量级。
+  VoxelCollision(this.world, {this.epsilon = 1.0E-7, this.unloadedPassable = true});
 
   final CollisionWorld world;
   final bool unloadedPassable;

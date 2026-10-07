@@ -32,6 +32,19 @@ class PlayerMotion {
   ///   后得到格/刻，再 ×20 才是格/秒。
   static const double moveSpeedAttribute = 0.1;
 
+  /// 创造飞行的**竖直**注入系数（判据 `LocalPlayer.aiStep`，`LocalPlayer.java:844`）：
+  /// `setDeltaMovement(add(0, inputYa * abilities.getFlyingSpeed() * 3.0F, 0))`。
+  ///
+  /// **注意与水平的速度来源不同**（这是 2026-10-07 踩过的坑）：
+  /// - 竖直：`abilities.getFlyingSpeed() × 3`（客户端本地预测，`LocalPlayer.java:833-845`，
+  ///   在 `super.aiStep()` **之前**独立执行，**不经过** `getInputVector`）
+  /// - 水平：`getFrictionInfluencedSpeed` → 空中返回 `getFlyingSpeed()`
+  ///   = `getSpeed() × 0.1`（`LivingEntity.java:2707`）
+  ///
+  /// 早先误把两者统一成 `getSpeed() × 0.1`（0.01 格/刻），比原版慢 15 倍
+  /// （原版竖直是 0.05×3 = 0.15 格/刻）⇒ 实机反馈"飞行慢得像蜗牛"。
+  static const double flyVerticalInputScale = 3.0;
+
   static const double walkSpeed = 4.317;
   static const double sprintSpeed = 5.612;
   static const double sneakSpeed = 1.295;
@@ -116,6 +129,11 @@ class PlayerController {
 
   /// 距下一个刻边界的时间（秒）。竖直运动学只在此边界推进。
   double _verticalTickAccum = 0;
+
+  /// 飞行用的刻累加器（判据同竖直：`Player.travel` 每 tick 一次 `move()`，
+  /// `Player.java:1395-1400`）。与 [_verticalTickAccum] 分开是因为两条路径
+  /// 不能同时推进（飞行时行走分支直接 return）。
+  double _flyTickAccum = 0;
 
   /// 本刻是否已起跳（原版 `noJumpDelay = 10` 的轻量替身：防止按住空格
   /// 在一个刻内重复注入初速；原版是 10 刻冷却，本期只保证"每刻至多一次"）。
@@ -268,11 +286,20 @@ class PlayerController {
       player.velocity.y = 0;
     }
     player.onGround = grounded;
+    _advanceTickProgress();
+  }
 
-    // 渲染插值进度：本子步结束时本刻已过的比例（判据 `partialTicks`）。
-    // 相机读 [Player.eyePosition]（已插值），物理读 [Player.position]（不插值）。
+  /// 推进渲染插值进度（判据 `EntityRenderer.extractRenderState`，
+  /// `EntityRenderer.java:164-165`：`Mth.lerp(partialTicks, yOld, getY())`）。
+  ///
+  /// 原版对**所有**实体一律插帧，不区分行走/跳跃/飞行 ⇒ 我们也 MUST 在
+  /// 每条物理路径上推进，否则该状态在渲染上是 20Hz 台阶（表现为卡顿）。
+  void _advanceTickProgress() {
+    final accum = flying && _flyTickAccum > 0
+        ? _flyTickAccum
+        : _verticalTickAccum;
     player.tickProgress =
-        (_verticalTickAccum / PlayerMotion.tickSeconds).clamp(0.0, 1.0);
+        (accum / PlayerMotion.tickSeconds).clamp(0.0, 1.0);
   }
 
   /// 推进一个刻的竖直运动学（REF 见 [PlayerMotion] 的时序注释）。
@@ -318,12 +345,21 @@ class PlayerController {
   /// **不清零速度**（原版 `Entity.move` 只拦位置、不改 deltaMovement，清零会让
   /// 贴墙飞行像"撞停"）。
   void _flyingStep(double dt, InputState input) {
-    // `input.y` = `jump - sneak`（原版 `KeyboardInput` 的竖直输入口径）。
+    // `inputYa` = `jump - sneak`（判据 `LocalPlayer.java:834-840`：
+    // shift → -1、jump → +1，相加）。
     final inputYa = (input.jump ? 1.0 : 0.0) - (input.sneak ? 1.0 : 0.0);
+    // 竖直注入量（判据 `LocalPlayer.java:844`）：
+    // `inputYa * abilities.getFlyingSpeed() * 3.0F`—— 服务器下发的
+    // `Abilities.flyingSpeed`（默认 0.05）× 3 = 0.15 格/刻。
+    final flyingSpeedPerTick =
+        (abilities?.flyingSpeed ?? 0.05) * PlayerMotion.flyVerticalInputScale;
 
-    _flyAccumTicks += dt * 20.0;
-    while (_flyAccumTicks >= 1.0) {
-      _flyAccumTicks -= 1.0;
+    _flyTickAccum += dt;
+    while (_flyTickAccum >= PlayerMotion.tickSeconds) {
+      _flyTickAccum -= PlayerMotion.tickSeconds;
+      // 跨刻 ⇒ 上一刻落点成为插值起点（判据 `EntityRenderer.java:164` 的 `yOld`，
+      // 原版对飞行实体同样插帧）。
+      player.yOld = player.position.y;
 
       // —— 逐字翻译 `LivingEntity.handleRelativeFrictionAndCalculateMovement` + `travelInAir`——
       //
@@ -335,8 +371,8 @@ class PlayerController {
       //   LivingEntity:2707  getFlyingSpeed() = getSpeed() × 0.1
       //
       // 顺序不可换：先按**未扣重力**的速度位移，再扣重力，最后乘摩擦。
-      // `getFrictionInfluencedSpeed` 空中返回 `getFlyingSpeed()`（:2699），
-      // 不读服务器下发的 `flyingSpeed` —— 竖直注入才读它（Player.travel 的 inputYa 路径）。
+      // `getFrictionInfluencedSpeed` 空中返回 `getFlyingSpeed()`（:2699），**不读**
+      // 服务器下发的 `flyingSpeed`；**竖直**才读它（`LocalPlayer.java:844`）。
 
       // ① moveRelative：`setDeltaMovement(δ + input × getFlyingSpeed())`
       //   判据 Entity:1741 `moveRelative` → `setDeltaMovement(deltaMovement.add(delta))`
@@ -354,6 +390,9 @@ class PlayerController {
       // 原版飞行确实**很慢**（0.2 格/秒），这是判据，不是 bug。
       //
       // **不按 isSprinting 放大**——判据里没有这个分支（原版飞行速度与疾跑无关）。
+      // 水平：判据 `LivingEntity.getFlyingSpeed()`（`LivingEntity.java:2707`）
+      // = `getSpeed() × 0.1`，经 `moveRelative`（`Entity.java:1741`）注入，
+      // 其中 input 长度 > 1 时按 `getInputVector`（`Entity.java:1752`）归一化折算。
       final flySpeed = PlayerMotion.moveSpeedAttribute * 0.1;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
@@ -362,9 +401,17 @@ class PlayerController {
         _flyVelocity.x += dir.x * flySpeed;
         _flyVelocity.z += dir.z * flySpeed;
       }
-      // `moveRelative` 的 input 是三维的，竖直分量同样要加（`Player.travel`
-      // 的 inputYa = jump - sneak）。
-      _flyVelocity.y += inputYa * flySpeed;
+      // 竖直：判据 `LocalPlayer.java:833-845` —— **独立于水平**的一段：
+      //   if (abilities.flying && isControlledCamera()) {
+      //     int inputYa = (shift ? -1 : 0) + (jump ? 1 : 0);
+      //     if (inputYa != 0)
+      //       setDeltaMovement(deltaMovement.add(0, inputYa * abilities.getFlyingSpeed() * 3.0F, 0));
+      //   }
+      // 它在 `super.aiStep()` 之前跑，**不经过** `getInputVector`，
+      // 所以水平那套 `length > 1.0` 归一化不适用于竖直。
+      if (inputYa != 0) {
+        _flyVelocity.y += inputYa * flyingSpeedPerTick;
+      }
 
       // ② move：位移用**未扣重力、未乘摩擦**的速度（`deltaMovement` 原值）。
       _flyVelocityThisTickX = _flyVelocity.x;
@@ -419,6 +466,8 @@ class PlayerController {
     );
     player.applyMove(result);
     player.onGround = result.hitY && result.hasBlockBelow;
+    // 飞行态也要插帧（判据 `EntityRenderer.java:164` 对所有实体一律插值）。
+    _advanceTickProgress();
   }
 
   /// 双击窗口剩余秒数（只读诊断视图；原版 `jumpTriggerTime` 剩余刻数 ÷ 20）。
@@ -429,7 +478,6 @@ class PlayerController {
 
   /// 飞行速度（`格/刻`；与 [Player.velocity]的 `格/秒` 分开承载）。
   final Vector3 _flyVelocity = Vector3.zero();
-  double _flyAccumTicks = 0;
 }
 
 

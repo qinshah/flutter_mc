@@ -11,7 +11,10 @@ import 'package:flutter_mc/game/player.dart';
 // ---------------------------------------------------------------------------
 
 /// VoxelCollision 默认贴合量：落到方块顶面后停在 `顶面 + epsilon`。
-const double _epsilon = 1e-4;
+///
+/// **判据 `AABB.EPSILON = 1.0E-7`**（`AABB.java:14`）—— 与 `VoxelCollision`
+/// 的默认值同源。测试用同一常量，故实现改量级时本常量同步。
+const double _epsilon = 1.0E-7;
 
 /// 每格方块占 1.0，所以方块层 `by` 的顶面是 `by + 1.0`。
 const double _floorTopY = 64.0;

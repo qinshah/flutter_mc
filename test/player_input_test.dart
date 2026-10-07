@@ -19,12 +19,12 @@ class EmptyWorld implements CollisionWorld {
 /// 飞行 1 秒后的**竖直位移**（含首帧相位，与真实 tick 驱动一致）。
 ///
 /// 判据黄金值见下方测试：逐字翻译 `Player.travel` + `LivingEntity` 得
-/// 0.4375 格/秒（原版创造飞行确实很慢，别按"看起来不对"去调）。
-double _flyFor(void Function(InputState) setup) {
+/// 6.5625 格/秒（原版创造飞行确实很慢，别按"看起来不对"去调）。
+double _flyFor(void Function(InputState) setup, {double flyingSpeed = 0.05}) {
   final controller = PlayerController(
     world: EmptyWorld(),
     player: Player(),
-    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: 0.05),
+    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: flyingSpeed),
   );
   controller.player.position.y = 100;
   controller.flying = true;
@@ -38,11 +38,11 @@ double _flyFor(void Function(InputState) setup) {
 }
 
 /// 飞行 1 秒后的**水平位移**（yaw=0 时落在 −Z 分量）。
-double _flyForHorizontal(void Function(InputState) setup) {
+double _flyForHorizontal(void Function(InputState) setup, {double flyingSpeed = 0.05}) {
   final controller = PlayerController(
     world: EmptyWorld(),
     player: Player(),
-    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: 0.05),
+    abilities: AbilitiesSnapshot(mayfly: true, flyingSpeed: flyingSpeed),
   );
   controller.player.position.y = 100;
   controller.flying = true;
@@ -137,7 +137,7 @@ void main() {
   // 在下一子步立刻补上，故长期速率仍精确 20 刻/秒，只是相位差一刻）。
   // 理论终速：竖直 4.5 格/秒、水平 10.11（疾跑 20.22），1 秒尚未收敛到终速。
 
-  test('飞行竖直：逐字翻译 Player.travel → 上下严格对称、0.4375 格/秒', () {
+  test('飞行竖直：逐字翻译 Player.travel → 上下严格对称、6.5625 格/秒', () {
     // 判据 mc-sources/minecraft-26.2，逐字翻译（顺序不可换）：
     //   LivingEntity:2656  moveRelative(getFrictionInfluencedSpeed) —— δ + input×flySpeed
     //   LivingEntity:2707  getFlyingSpeed() = getSpeed()×0.1 = 0.2156 格/刻
@@ -145,13 +145,17 @@ void main() {
     //   Player:1398setDeltaMovement(y = originalMovementY × 0.6)
     //
     // **收尾的 ×0.6 覆盖 travelInAir 的扣重力结果**（不是相乘、也不是 max）。
-    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：上升 +0.4375 / 下降 -0.4375。
-    // 量纲关键：`getSpeed()` 是**属性值 0.1**（Player:209），不是格/秒 ⇒
-    // getFlyingSpeed() = 0.01 格/刻 = 0.2 格/秒。原版飞行就是慢。
+    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：上升 +6.5625 / 下降 -6.5625。
+    // **竖直与水平来源不同**（2026-10-07 用户反馈"慢得像蜗牛"后查实）：
+    // - 竖直：`inputYa * abilities.getFlyingSpeed() * 3.0F`（`LocalPlayer.java:844`）
+    //   = 0.15 格/刻 —— 这是**客户端本地预测**的独立一段，在 `super.aiStep()`
+    //   之前跑，不经过 `getInputVector`。
+    // - 水平：`getFlyingSpeed() = getSpeed() × 0.1`（`LivingEntity.java:2707`）
+    //   = 0.01 格/刻，经 `moveRelative` 注入。
     final up = _flyFor((i) => i.jump = true);
     final down = _flyFor((i) => i.sneak = true);
-    expect(up, closeTo(0.4375, 1e-3));
-    expect(down, closeTo(-0.4375, 1e-3));
+    expect(up, closeTo(6.5625, 1e-3));
+    expect(down, closeTo(-6.5625, 1e-3));
     // **上下严格对称**——这是用户实机反馈的问题（"上升和下降速度不一样"）。
     expect(up, closeTo(-down, 1e-6));
 
@@ -181,11 +185,12 @@ void main() {
         reason: '松手后 airDrag 指数衰减到0（不清零是原版惯性，但会趋 0）');
   });
 
-  test('飞行：abilities.flyingSpeed 不影响速度（判据只看 getSpeed）', () {
-    // 判据 `LivingEntity.getFrictionInfluencedSpeed`（:2699）空中返回
-    // `getFlyingSpeed()` = `getSpeed() × 0.1`（:2707），**不读 abilities.flyingSpeed**。
-    // 服务端下发的 `Abilities.flyingSpeed` 不参与本地飞行物理——早先实现错误地
-    // 拿它当竖直注入量（0.05×3=0.15 而非 getFlyingSpeed 0.2156）⇒ 速度偏差 7 倍。
+  test('飞行：abilities.flyingSpeed 只影响竖直、不影响水平', () {
+    // 判据（2026-10-07 查实，推翻了早先"两侧都不读它"的判断）：
+    // - 竖直：`LocalPlayer.java:844` `inputYa * abilities.getFlyingSpeed() * 3.0F`
+    //   ⇒ **读** `Abilities.flyingSpeed`（默认 0.05）。
+    // - 水平：`LivingEntity.java:2707` `getFlyingSpeed() = getSpeed() × 0.1`
+    //   ⇒ **不读**，只看 `Attributes.MOVEMENT_SPEED`。
     final fast = PlayerController(
       world: EmptyWorld(),
       player: Player(),
@@ -201,14 +206,16 @@ void main() {
     normal.player.position.y = 100;
     normal.flying = true;
 
-    final input = InputState()..jump = true;
-    const dt = 1 / 120;
-    for (var i = 0; i < 120; i++) {
-      fast.tick(dt, input);
-      normal.tick(dt, input);
-    }
-    expect(fast.player.velocity.y, closeTo(normal.player.velocity.y, 1e-9),
-        reason: '判据不看 abilities.flyingSpeed，两者应完全一致');
-    expect(fast.player.position.y - 100, closeTo(0.4375, 1e-3));
+    // 竖直：flyingSpeed 加倍 ⇒ 位移加倍。
+    final vFast = _flyFor((c) { c.jump = true; }, flyingSpeed: 0.1);
+    final vNormal = _flyFor((c) { c.jump = true; }, flyingSpeed: 0.05);
+    expect(vFast, closeTo(vNormal * 2, 1e-3),
+        reason: '判据：竖直注入 ∝ abilities.flyingSpeed');
+
+    // 水平：不受 flyingSpeed 影响。
+    final hFast = _flyForHorizontal((c) { c.move.y = 1; }, flyingSpeed: 0.1);
+    final hNormal = _flyForHorizontal((c) { c.move.y = 1; }, flyingSpeed: 0.05);
+    expect(hFast, closeTo(hNormal, 1e-6),
+        reason: '判据：水平只看 getSpeed() × 0.1');
   });
 }
