@@ -393,7 +393,10 @@ class PlayerController {
       // 水平：判据 `LivingEntity.getFlyingSpeed()`（`LivingEntity.java:2707`）
       // = `getSpeed() × 0.1`，经 `moveRelative`（`Entity.java:1741`）注入，
       // 其中 input 长度 > 1 时按 `getInputVector`（`Entity.java:1752`）归一化折算。
-      final flySpeed = PlayerMotion.moveSpeedAttribute * 0.1;
+      // `getSpeed()` 来自服务器下发的 `Abilities.walkingSpeed`（判据
+      // `Player.java:639`：`setBaseValue(abilities.getWalkingSpeed())`），
+      // 空中再 ×0.1（`LivingEntity.java:2707`）。
+      final flySpeed = (abilities?.walkingSpeed ?? PlayerMotion.moveSpeedAttribute) * 0.1;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
@@ -483,7 +486,22 @@ class PlayerController {
 
 /// abilities 快照（app 壳每帧从会话同步；纯数据便于控制器单测）。
 class AbilitiesSnapshot {
-  AbilitiesSnapshot({this.mayfly = false, this.flyingSpeed = 0.05});
+  AbilitiesSnapshot({
+    this.mayfly = false,
+    this.flyingSpeed = 0.05,
+    this.walkingSpeed = 0.1,
+  });
   bool mayfly;
+
+  /// 竖直飞行注入源（判据 `Abilities.flyingSpeed`，`Abilities.java:21`）。
   double flyingSpeed;
+
+  /// `Attributes.MOVEMENT_SPEED` 的**属性值**（判据 `Abilities.walkingSpeed`，
+  /// `Abilities.java:21`；由 `Player.java:639` 的 `setBaseValue` 写入）。
+  ///
+  /// **它决定水平飞行速度**：`getFlyingSpeed() = getSpeed() × 0.1`
+  /// （`LivingEntity.java:2707`）⇒ 0.1 × 0.1 = 0.01 格/刻。
+  ///
+  /// 早先把水平速度写死 0.1 而不读服务端下发值 ⇒ 换服务器/插件改速时不跟随。
+  double walkingSpeed;
 }

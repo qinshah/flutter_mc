@@ -341,12 +341,19 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       case AbilitiesUpdated(
           :final mayfly,
           :final flying,
-          :final flyingSpeed
+          :final flyingSpeed,
+          :final walkingSpeed
         ):
         _abilities
           ..mayfly = mayfly
-          ..flyingSpeed = flyingSpeed;
-        debugPrint('[ABIL] mayfly=$mayfly flying=$flying speed=$flyingSpeed');
+          ..flyingSpeed = flyingSpeed
+          // 判据 `Player.java:639`：
+          //   setBaseValue(abilities.getWalkingSpeed()) ⇒ MOVEMENT_SPEED
+          // 而水平飞行速度 = `getSpeed() × 0.1`（`LivingEntity.java:2707`）
+          // ⇒ **walkingSpeed 决定水平飞行快慢**，必须透传。
+          ..walkingSpeed = walkingSpeed;
+        debugPrint('[ABIL] mayfly=$mayfly flying=$flying '
+            'flySpeed=$flyingSpeed walkSpeed=$walkingSpeed');
       case PositionCorrection(
           :final x,
           :final y,

@@ -88,11 +88,22 @@ final class AbilitiesUpdated extends SessionEvent {
     required this.mayfly,
     required this.flying,
     required this.flyingSpeed,
+    required this.walkingSpeed,
   });
 
   final bool mayfly;
   final bool flying;
+
+  /// 飞行速度（判据 `Abilities.flyingSpeed`，`Abilities.java:21`）。
+  /// 原版用于**竖直**飞行注入：`inputYa × flyingSpeed × 3`（`LocalPlayer.java:844`）。
   final double flyingSpeed;
+
+  /// 行走速度（判据 `Abilities.walkingSpeed`，`Abilities.java:21`）。
+  /// 原版用它设置 `Attributes.MOVEMENT_SPEED`
+  /// （`Player.java:639`：`setBaseValue(abilities.getWalkingSpeed())`），
+  /// 而**水平飞行**速度 = `getSpeed() × 0.1`（`LivingEntity.java:2707`）⇒
+  /// **水平飞行快慢由它决定**。协议层此前读了该字段但未往下传 ⇒ 水平速度被写死。
+  final double walkingSpeed;
 }
 
 final class SessionClosed extends SessionEvent {
@@ -422,10 +433,12 @@ final class RemoteSession {
         _mayfly = a.mayfly;
         _serverFlying = a.flying;
         _flyingSpeed = a.flyingSpeed;
+        _walkingSpeed = a.walkingSpeed;
         _events.add(AbilitiesUpdated(
           mayfly: a.mayfly,
           flying: a.flying,
           flyingSpeed: a.flyingSpeed,
+          walkingSpeed: a.walkingSpeed,
         ));
       case final PlayerPosition pos:
         _handlePosition(pos);
@@ -637,6 +650,12 @@ final class RemoteSession {
   bool _serverFlying = false;
   double _flyingSpeed = 0.05;
 
+  /// 服务器下发的行走速度（判据 `Abilities.walkingSpeed`，`Abilities.java:21`）。
+  /// 原版用它设 `Attributes.MOVEMENT_SPEED`（`Player.java:639`），
+  /// 而水平飞行速度 = `getSpeed() × 0.1`（`LivingEntity.java:2707`）。
+  /// 默认 0.1（同`Abilities.java:21` 的字段默认值）。
+  double _walkingSpeed = 0.1;
+
   /// 服务器最近一次下发的 mayfly（是否允许创造飞行）。
   bool get mayfly => _mayfly;
 
@@ -644,7 +663,12 @@ final class RemoteSession {
   bool get serverFlying => _serverFlying;
 
   /// 飞行速度（格/刻；默认 0.05，服务器可下发覆盖）。
+  /// 原版用于**竖直**飞行注入（`LocalPlayer.java:844`）。
   double get flyingSpeed => _flyingSpeed;
+
+  /// 行走速度（属性值，默认 0.1，服务器可下发覆盖）。
+  /// 原版用它设 `Attributes.MOVEMENT_SPEED`（`Player.java:639`）⇒ 决定**水平飞行**速度。
+  double get walkingSpeed => _walkingSpeed;
 
   /// 飞行切换上报（REF: LocalPlayer.onUpdateAbilities → ServerboundPlayerAbilitiesPacket，
   /// 仅 1 字节 flying 位）。
