@@ -26,7 +26,7 @@ keepAlive/cookie/resource-pack/`sendDeferredPackets`、`ClientPacketListener.not
   改语言特性，但不得改数值、改顺序、改语义）。
 - **确实没有对应物** ⇒ 必须**在代码注释或提交信息里写明**属于上述两类之一（或指明
   Flutter / flutter_scene 的具体 API 差异）。
-- **原版有 Java 但我们简化了** ⇒ 那是**翻译债**，登记进 `docs/translation-debt.md`，
+- **原版有 Java 但我们简化了** ⇒ 那是**翻译债**，登记进 `openspec/progress.md`，
   **MUST NOT** 叫它"自由设计"。
 - "看起来原版也差不多""我以为是这样"**都不算理由**。理由必须能指向源码行号。
 

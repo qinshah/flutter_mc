@@ -105,3 +105,7 @@ dist/
 # 官方 client jar 提取产物（版权：不入库；工具 tool/extract_assets.dart，按版本并列）
 /assets/vanilla/*
 !/assets/vanilla/.gitkeep
+
+# Dart 包构建产物（注意：上面第 33 行的 `/build/` 带前导斜杠，只匹配仓库根，
+# 匹配不到 monorepo 里每个子包各自生成的 build/；此处显式补上）
+packages/*/build/

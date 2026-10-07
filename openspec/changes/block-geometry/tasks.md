@@ -42,4 +42,4 @@
       无青蓝冰柱、无红色、无穿插破面
 
 **遗留（不在本 change）**：光照（AO/平滑/lightmap）、天气、天空 —— 见
-`docs/translation-debt.md`；模型带 rotation 的几何；碰撞的细粒度 AABB。
+`openspec/progress.md`；模型带 rotation 的几何；碰撞的细粒度 AABB。
