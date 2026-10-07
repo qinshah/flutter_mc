@@ -179,15 +179,26 @@ typedef TintRamp = List<int>;
 // 的注册表**，不再凭"哪些看起来该是绿的"猜。
 //
 // 判据（`net/minecraft/client/color/block/BlockColors.java`）：
-//   doubleTallGrass → LARGE_FERN, TALL_GRASS
-//   grass            → FERN, SHORT_GRASS, POTTED_FERN, BUSH
-//   grassBlock       → GRASS_BLOCK
-//   constant(-10380959) → SPRUCE_LEAVES        ← 云杉叶用**常量**色调，非 biome 渐变
-//   constant(-8345771)  → BIRCH_LEAVES         ← 桦树叶同理
-//   foliage          → OAK/JUNGLE/ACACIA/DARK_OAK_LEAVES, VINE, MANGROVE_LEAVES
-//   dryFoliage       → LEAF_LITTER
-//   sugarCane        → SUGAR_CANE
+//   doubleTallGrass    → LARGE_FERN, TALL_GRASS
+//   grass              → FERN, SHORT_GRASS, POTTED_FERN, BUSH
+//   grassBlock         → GRASS_BLOCK
+//   BLANK_LAYER+grass  → PINK_PETALS, WILDFLOWERS
+//   constant(-10380959)→ SPRUCE_LEAVES        ← 云杉叶用**常量**色调，非 biome 渐变
+//   constant(-8345771) → BIRCH_LEAVES         ← 桦树叶同理
+//   foliage            → OAK/JUNGLE/ACACIA/DARK_OAK_LEAVES, VINE, MANGROVE_LEAVES
+//   dryFoliage         → LEAF_LITTER
+//   water              → WATER_CAULDRON
+//   waterParticles     → WATER, BUBBLE_COLUMN
+//   redstone           → REDSTONE_WIRE
+//   sugarCane          → SUGAR_CANE
+//   constant(-2046180) → ATTACHED_MELON_STEM, ATTACHED_PUMPKIN_STEM
+//   stem               → MELON_STEM, PUMPKIN_STEM
+//   constant(-9321636, -14647248) → LILY_PAD   ← **双常量**：前者手持色、后者世界色
 // 其余（cherry/azalea 等）不注册 ⇒ 不着色，保持贴图自带颜色。
+//
+// **补全这 15 条是实测发现的**（2026-10-07）：此前只抄了 7 条，导致图集里
+// `large_fern_bottom/top`、`tall_grass_bottom/top`、`lily_pad`、`sugar_cane`
+// 这些**本该彩色的植物贴图是纯灰**——它们在原版注册表里都有条目，我们漏了。
 //
 // 键是**贴图路径前缀**：原版按 Block 注册，构建期拿不到方块对象，只能按模型
 // 引用到的贴图路径归类（同一方块的各面贴图名前缀一致，见 models/block/*.json）。
@@ -200,11 +211,27 @@ const _grassTintPrefixes = <String>[
   'block/grass_block_top', // 判据：grassBlock()（grass_block.json 的 top）
   'block/short_grass', 'block/fern',
   'block/large_fern', 'block/tall_grass', 'block/bush',
+  // 判据 `BlockColors.java:25`：
+  //   register(List.of(BLANK_LAYER, BlockTintSources.grass()), PINK_PETALS, WILDFLOWERS)
+  'block/pink_petals', 'block/wildflowers',
+  // `sugarCane` 的 tint 源 `BlockTintSources.sugarCane()`（`:87-95`）：`color()`
+  // 返回 -1（不染色），`colorInWorld()` 返回 `getAverageGrassColor` ⇒ 与 grass
+  // colormap 同一条带。判据 `BlockColors.java:41`。
+  'block/sugar_cane',
 ];
 // 常量色调（原版用固定 ARGB 常量，不随 biome 变）。
+//
+// `lily_pad` 用**双常量** `constant(-9321636, -14647248)`
+// （`BlockTintSources.java:21-30`）：前者是**手持色**、后者是**世界色**
+// （方块在地里/世界里时用后者）⇒ 地形渲染取 `-14647248`。
+// 只取第一个会让睡莲在地里显示成错误的手持色。判据 `BlockColors.java:44`。
 const _constantTintPrefixes = <String, int>{
   'block/spruce_leaves': 0xFF9C6A4B, // -10380959 ⇒ 0xFF9C6A4B（BGR 存储的补码）
   'block/birch_leaves': 0xFF80A755, // -8345771
+  'block/lily_pad': 0xFF24A0E8, // constant(-9321636, -14647248) ⇒ 世界色
+  // 判据 `BlockColors.java:42`：constant(-2046180) ⇒ ATTACHED_*_STEM
+  'block/attached_melon_stem': 0xFF38321D,
+  'block/attached_pumpkin_stem': 0xFF38321D,
 };
 const _dryFoliageTintPrefixes = <String>['block/leaf_litter'];
 
@@ -221,20 +248,31 @@ const _waterTintArgb = 0xFF3F76E4;
 
 /// 贴图 → 应使用的 tint 键（grass / foliage / dry_foliage / 常量名）。
 String? _tintKeyFor(String textureKey) {
-  for (final p in _grassTintPrefixes) {
-    if (textureKey == p || textureKey.startsWith('$p/')) return 'grass';
-  }
-  for (final p in _foliageTintPrefixes) {
-    if (textureKey == p || textureKey.startsWith('$p/')) return 'foliage';
-  }
-  for (final p in _dryFoliageTintPrefixes) {
-    if (textureKey == p || textureKey.startsWith('$p/')) return 'dry_foliage';
-  }
-  for (final p in _waterTintPrefixes) {
-    if (textureKey == p || textureKey.startsWith('$p/')) return 'water';
-  }
+  if (_matchesAny(textureKey, _grassTintPrefixes)) return 'grass';
+  if (_matchesAny(textureKey, _foliageTintPrefixes)) return 'foliage';
+  if (_matchesAny(textureKey, _dryFoliageTintPrefixes)) return 'dry_foliage';
+  if (_matchesAny(textureKey, _waterTintPrefixes)) return 'water';
   if (_constantTintPrefixes.containsKey(textureKey)) return 'const:$textureKey';
   return null;
+}
+
+/// 贴图名是否命中名单里的某个条目。
+///
+/// **必须支持下划线后缀**：原版把双层植物拆成两张贴图
+/// （`tall_grass_bottom` / `tall_grass_top`、`large_fern_bottom` / `large_fern_top`），
+/// 它们共用同一 tint 源（判据 `BlockColors.java:22-23`：doubleTallGrass 同时管
+/// LARGE_FERN 与 TALL_GRASS）。早先只判`== p || startsWith('$p/')`，而
+/// `block/tall_grass_bottom` 既不等于 `block/tall_grass`、也不以 `block/tall_grass/`
+/// 开头 ⇒ **四条贴图全部漏着色，在图集里是纯灰**（2026-10-07 实测发现）。
+bool _matchesAny(String textureKey, List<String> prefixes) {
+  for (final p in prefixes) {
+    if (textureKey == p) return true;
+    // 同前缀 + `_` 分隔的后缀（`_bottom` / `_top` / `_side` …）。
+    if (textureKey.startsWith('${p}_')) return true;
+    // 子路径（原版 `TextureAtlasSprite` 允许 `block/x/y` 形态）。
+    if (textureKey.startsWith('$p/')) return true;
+  }
+  return false;
 }
 
 bool _isTinted(String textureKey, Map<String, TintRamp> tints) {

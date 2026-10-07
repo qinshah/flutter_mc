@@ -671,6 +671,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           'dirty=${_dirtyQueue.length - _dirtyCursor} '
           'yaw=${_player.yaw.toStringAsFixed(2)} '
           '看=${_lookBlockName()} '
+
           'gameTime=${_sky.gameTime} day=${_sky.dayFraction.toStringAsFixed(3)} '
           'sunElev=${_sky.sunElevation.toStringAsFixed(2)}',
         );
