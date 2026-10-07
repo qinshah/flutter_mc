@@ -24,7 +24,7 @@ import 'uv_rect.dart';
 ///
 /// ## 仍存在的简化
 ///
-/// 无 AO / 平滑光照 / lightmap（见 `docs/translation-debt.md`）；
+/// 无 AO / 平滑光照 / lightmap（见 `openspec/progress.md`）；
 /// 流体族内部面剔除按"同名流体"近似。
 ///
 /// 纯计算：不 import flutter_scene，可在 worker isolate 运行。
