@@ -14,6 +14,23 @@
 现状代码：`game_screen.dart` 第 603-608 行 `KeyboardListener(focusNode: _focus, autofocus: true, …)`
 嵌套 `Listener(onPointerMove: …)`。`_pressed` 集合由 `KeyMap.update` 维护，只在收到 KeyUp 时移除。
 
+## 判据清单（审查门禁必需，进入实现前已核对）
+
+| 判据 | 位置 | 用到的地方 |
+|---|---|---|
+| `grabMouse()` 只在窗口活跃时抓指针、抓后指针回中心 | `MouseHandler.java:404-417` | 指针捕获的实现语义 |
+| `releaseMouse()` 解除并把指针位置记为窗口中心 | `MouseHandler.java:422-428` | `Esc` 解除路径 |
+| `RESTORE_KEY_STATE_AFTER_MOUSE_GRAB = !ON_OSX` | `InputQuirks.java:11` | **macOS 原版不重置按键**——见 D1 的修正 |
+| `KeyMapping.setAll()` / `releaseAll()` | `KeyMapping.java:47` / `:57` | 失焦时清按键的**语义对应物**（非逐行） |
+| `cursorEntered()` 置 `ignoreFirstMove` | `MouseHandler.java:430` | 重新进入窗口时不产生视角跳变 |
+
+**重要修正（推翻原 design 的一处判断）**：原以为"抓鼠标时原版会重置按键状态
+（`RESTORE_KEY_STATE_AFTER_MOUSE_GRAB`）"，但该常量为 `!ON_OSX` ⇒ **macOS 原版明确
+不做**。所以我们的"失焦清按键"不是照抄这一处，而是补macOS 平台原版同样存在的
+"失焦后收不到 KeyUp"缺口——它属于**平台差异**（原版 GLFW 在 macOS 上也会丢 KeyUp，
+但原版靠 `KeyMapping.releaseAll()` 在别处兜住），落在纪律允许的自由设计范围内，
+但**语义仍照原版**：清空全部按键状态。
+
 ## Goals / Non-Goals
 
 - 目标：失焦即清空按键与未消费输入（消除卡键与系统提示音），**用Flutter 原生**。
@@ -38,6 +55,9 @@
   *判定标准*：若此方案在实机验收中视角跟手性不足（例如边界处有明显延迟感），
   再引 `window_manager.setPointerLock()`（macOS 有原生 `CGAssociateMouseAndMouseCursorPosition`）。
   这是**唯一可能新增的依赖**，且仅在 D3 原生方案实测不达标时才引入。
+  *语义对照*：原版 `grabMouse()`（`MouseHandler.java:404`）做三件事——指针移回窗口
+  中心、记录`ignoreFirstMove`（避免回中那一下产生视角跳变）、关闭屏幕 GUI。
+  原生方案 MUST 覆盖前两件（回中补偿 + 忽略第一次移动），第三件在我们这里天然成立。
 - **D4 `Esc` 解除捕获**。`Esc` 在 macOS 上是系统级"退出全屏"键，Flutter 仍能收到
   `KeyDownEvent`；在 `_onKey` 里识别 `escape` 解除捕获并清键（与 D1 共用清理函数）。
 

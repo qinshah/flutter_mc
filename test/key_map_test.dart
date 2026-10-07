@@ -91,6 +91,35 @@ void main() {
     });
   });
 
+  group('releaseAll（失焦清键；判据 KeyMapping.releaseAll）', () {
+    test('清空全部按下的键，返回是否真的清掉了东西', () {
+      final pressed = <LogicalKeyboardKey>{
+        LogicalKeyboardKey.keyW,
+        LogicalKeyboardKey.controlLeft,
+      };
+      expect(KeyMap.releaseAll(pressed), isTrue);
+      expect(pressed, isEmpty);
+      // 已经空了 ⇒ 返回 false（调用方据此跳过重算）
+      expect(KeyMap.releaseAll(pressed), isFalse);
+    });
+
+    test('releaseAll 后移动意图归零（失焦不再产生前进上行）', () {
+      final pressed = <LogicalKeyboardKey>{LogicalKeyboardKey.keyW};
+      final input = InputState();
+      KeyMap.apply(pressed, input);
+      expect(input.isMoving, isTrue,
+          reason: '判据：releaseAll 语义是把键视为【松开】，不是忽略');
+
+      KeyMap.releaseAll(pressed);
+      KeyMap.apply(pressed, input);
+      expect(input.isMoving, isFalse);
+      expect(input.jump, isFalse);
+      expect(input.sneak, isFalse);
+      expect(input.sprint, isFalse,
+          reason: '失焦时加速（切换式）也应回到未激活');
+    });
+  });
+
   group('按键集合维护（别名键同按不误停）', () {
     final pressed = <LogicalKeyboardKey>{};
 

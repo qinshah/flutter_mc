@@ -34,6 +34,20 @@ class KeyMap {
     LogicalKeyboardKey.controlRight,
   ];
 
+  /// 清空"当前按住的键"集合（判据 `KeyMapping.releaseAll()`，`KeyMapping.java:57`）。
+  ///
+  /// **为什么需要**：macOS 窗口失焦后不再投递 KeyUp ⇒ `_pressed` 里的键永久卡在
+  /// "按下"态（这同时解释了系统"无效按键"提示音：有 keyDown 无 keyUp 配对）。
+  /// 原版靠 GLFW 之外的路径兜住这个缺口；我们 MUST 自己清。
+  ///
+  /// 语义照原版 `releaseAll()`：把全部按键视为**松开**（不是"忽略"，是**释放**）。
+  /// 返回是否真的清掉了什么，供调用方决定是否需要重算输入。
+  static bool releaseAll(Set<LogicalKeyboardKey> pressed) {
+    if (pressed.isEmpty) return false;
+    pressed.clear();
+    return true;
+  }
+
   /// 维护"当前按住的键"集合。返回是否真的发生了变化（重复事件不算）。
   static bool update(Set<LogicalKeyboardKey> pressed, KeyEvent event) {
     if (event is KeyDownEvent || event is KeyRepeatEvent) {

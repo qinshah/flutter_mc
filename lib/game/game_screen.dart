@@ -51,7 +51,7 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   final Scene _scene = Scene();
   final Player _player = Player();
 
@@ -127,6 +127,8 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    // 失焦清键需要生命周期回调（macOS 失焦后不再收 KeyUp ⇒ 按键永久卡"按下"）。
+    WidgetsBinding.instance.addObserver(this);
     _controller = PlayerController(
       world: SessionCollisionWorld(_columns),
       player: _player,
@@ -194,6 +196,7 @@ class _GameScreenState extends State<GameScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _events?.cancel();
     _focus.dispose();
     widget.session.close();
@@ -201,6 +204,82 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   // —— 输入（Flutter 输入是本项目三处自由设计之一；键位照原版 KeyMapping） ——
+
+  /// 指针移动 → 视角增量，并实现原生指针捕获（虚拟光标锁）。
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (_pointerCaptured) {
+      final size = context.size;
+      final last = _lastPointerPos;
+      if (_ignoreNextMove) {
+        // 原版 `ignoreFirstMove`（`MouseHandler.java:415`）：抓指针/回中那一下
+        // 不算视角转动。同时把参考点挪到当前位置，作为后续越界补偿的基准。
+        _ignoreNextMove = false;
+        _lastPointerPos = event.position;
+        if (_trace) debugPrint('[KEY] 忽略回中那一次移动（ignoreFirstMove）');
+        return;
+      }
+      // **越界补偿**：指针抵达窗口边缘（贴边）时，把越过的那段位移反向加回去，
+      // 等价于原版真指针锁下"光标被钉在中心、视角继续转"的体验。
+      if (size != null && last != null && size.width > 0 && size.height > 0) {
+        final atEdgeX = event.position.dx <= 0 ||
+            event.position.dx >= size.width - 1;
+        final atEdgeY = event.position.dy <= 0 ||
+            event.position.dy >= size.height - 1;
+        if (atEdgeX || atEdgeY) {
+          // 从边缘回拉的位移方向与本帧位移方向相反 ⇒ 减掉它，视角就不会"粘住"。
+          _input.lookDelta.sub(vm.Vector2(event.delta.dx, event.delta.dy));
+          return;
+        }
+      }
+      _lastPointerPos = event.position;
+    }
+    _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
+  }
+
+  /// 失焦即释放全部按键（判据 `KeyMapping.releaseAll()`，`KeyMapping.java:57`）。
+  ///
+  /// **为什么必需**：macOS 窗口失焦后不再投递 KeyUp，`_pressed` 里的键会永久卡在
+  /// "按下"态——这既是"键盘突然失效"的原因，也是系统"无效按键"提示音的来源
+  ///（有 keyDown 无 keyUp 配对）。
+  ///
+  /// 注意 `RESTORE_KEY_STATE_AFTER_MOUSE_GRAB = !ON_OSX`（`InputQuirks.java:11`）
+  /// ⇒ **macOS 原版在抓鼠标时也不重置按键**，靠的是别的路径兜住这个缺口；
+  /// 我们在这里显式清，两边最终状态一致（全部松开）。
+  void _releaseAllKeys() {
+    // 失焦即解除指针捕获：原版 `grabMouse()` 要求 `isWindowActive()` 才抓，
+    // 且 GLFW 失焦时 `releaseMouse()` 会被调用（`MouseHandler.java:406/422`）。
+    if (_pointerCaptured) {
+      _pointerCaptured = false;
+      _ignoreNextMove = false;
+      _lastPointerPos = null;
+      if (_trace) debugPrint('[KEY] 失焦 → 解除指针捕获');
+    }
+    if (!KeyMap.releaseAll(_pressed)) return; // 本来就没有按住键
+    // 重算移动意图 ⇒ `InputState` 全部回到"松开"，并同步一次上行，
+    // 否则服务器仍认为玩家在前进。
+    KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
+    _sprintPrevHeld = false;
+    _input.clearSprintWhenNotMoving();
+    // 全松开地同步一次上行（服务器据此停止把玩家视为前进中）。
+    widget.session.sendInputFlags(
+      forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      jump: false,
+      shift: false,
+      sprint: false,
+    );
+    if (_trace) debugPrint('[KEY] 失焦释放全部按键');
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // `resumed → inactive` 即 macOS 窗口失焦；其余非活跃态同理。
+    if (state != AppLifecycleState.resumed) {
+      _releaseAllKeys();
+    }
+  }
 
   void _onKey(KeyEvent event) {
     if (KeyMap.update(_pressed, event)) {
@@ -211,6 +290,18 @@ class _GameScreenState extends State<GameScreen> {
         if (_trace) debugPrint('[SPRINT] toggle → active=${_input.sprint}');
       }
       _sprintPrevHeld = KeyMap.sprintHeld(_pressed);
+      // `Esc` 解除指针捕获（判据原版 `releaseMouse()`，`MouseHandler.java:422`）。
+      // macOS 上 Esc 仍是系统级键，Flutter 能收到 KeyDownEvent。
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.escape &&
+          _pointerCaptured) {
+        _pointerCaptured = false;
+        _ignoreNextMove = true;
+        // 解除时同样释放全部按键（原版 `releaseMouse` 不清键，但玩家在解绑态
+        // 按住任何键都不该继续生效，故一并清——避免"解绑后仍自动前进"）。
+        _releaseAllKeys();
+        if (_trace) debugPrint('[KEY] Esc → 解除指针捕获');
+      }
       if (_trace && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
         debugPrint('[KEY] space down（onGround=${_input.jump}）');
       }
@@ -219,6 +310,22 @@ class _GameScreenState extends State<GameScreen> {
 
   /// 上一帧 Ctrl 是否按着（加速切换的边沿比较基准）。
   bool _sprintPrevHeld = false;
+
+  // —— 指针捕获（原生近似；判据 `MouseHandler.grabMouse/`，`MouseHandler.java:404`）——
+  //
+  // 原版在 `grabMouse()` 里做三件事：指针移回窗口中心、置`ignoreFirstMove`
+  // （避免回中那一下产生视角跳变）、关闭屏幕 GUI。前两件由下面两个字段对应。
+  //
+  /// 本轮先做**原生近似**：指针移出窗口边界（`onPointerHover` 断流即视为离开）时，
+  // 把相对位移反向补偿回中心。实机跟手性不达标才引 `window_manager`（tasks 3.3 判定点）。
+  bool _pointerCaptured = false;
+
+  /// 捕获态下需要**忽略**的下一次移动（判据 `ignoreFirstMove`，
+  /// `MouseHandler.java:415`）：指针被强制回中那一下不能算作视角转动。
+  bool _ignoreNextMove = false;
+
+  /// 上一次已知的指针位置（窗口坐标，Flutter 的 [Offset]），用于检测越界。
+  Offset? _lastPointerPos;
 
   // —— 会话事件 → 场景 ——
   //
@@ -618,10 +725,65 @@ class _GameScreenState extends State<GameScreen> {
         onKeyEvent: _onKey,
         child: Listener(
         onPointerMove: (event) {
-          // 全屏指针→视角（fscraft 口径；pointer-lock 另行切片）。
-          _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
+          // 全屏指针→视角（fscraft 口径）。
+          _handlePointerMove(event);
         },
-        child: Stack(
+        // 指针离开窗口边界时 `onPointerMove` 会断流；据此判定"越界"并把位移
+        // 反向补偿回中心，实现零依赖的指针捕获（判据 `MouseHandler.grabMouse()`，
+        // `MouseHandler.java:404`）。实机跟手性不达标才引window_manager（tasks 3.3）。
+        // 指针捕获：判据`MouseHandler.grabMouse()`（`MouseHandler.java:404`）。
+        //
+        // **原生近似的实现原理**：`Listener` 没有 `onPointerExit`，所以用
+        // `onPointerMove` 的**停滞**判据——指针越过窗口边界时 Flutter 停止投递
+        // 移动事件（`_lastPointerPos` 停在边界上），而 `onPointerHover` 在指针
+        // 重新进入时才恢复。两者结合即可判定"越界 ⇒ 回中 ⇒ 忽略该次移动"
+        //（对应原版 `ignoreFirstMove`）。
+        onPointerHover: (event) {
+          if (!_pointerCaptured) return;
+          final size = context.size;
+          if (size == null || size.width <= 0 || size.height <= 0) return;
+          final pos = event.position;
+          final center = Offset(size.width / 2, size.height / 2);
+          // 越界深度（>0 说明指针在边界外侧）。
+          final overshoot = Offset((pos.dx - center.dx).abs(), (pos.dy - center.dy).abs());
+          final atEdge =
+              overshoot.dx >= size.width / 2 || overshoot.dy >= size.height / 2;
+          if (!atEdge) {
+            _lastPointerPos = pos;
+            return;
+          }
+          // 指针重新进入 ⇒ 回中并忽略这一次移动（原版 `ignoreFirstMove`）。
+          _lastPointerPos = center;
+          _ignoreNextMove = true;
+          if (_trace) {
+            debugPrint('[KEY] 指针回中(${overshoot.dx.toStringAsFixed(0)},'
+                '${overshoot.dy.toStringAsFixed(0)}) → 忽略该次移动');
+          }
+        },
+        // 点击游戏区即把键盘焦点取回（`_focus` 只有 autofocus，失焦后点了空白区
+        // 不会还焦点 ⇒ 键盘一直"失效"）。行为 translucent，不挡子控件的点击。
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) {
+            if (!_focus.hasFocus) {
+              _focus.requestFocus();
+              if (_trace) debugPrint('[KEY] 点击游戏区 → 抢回焦点');
+            }
+            // 首次点击即进入指针捕获（判据 `MouseHandler.grabMouse()`：
+            // 原版在关屏 GUI 后抓鼠标）。`grabMouse` 还要求窗口活跃才抓，
+            // Flutter 侧对应"点击必然活跃"。
+            if (!_pointerCaptured) {
+              _pointerCaptured = true;
+              // 原版 `ignoreFirstMove`：抓指针那一下不产生视角转动。
+              _ignoreNextMove = true;
+              final size = context.size;
+              _lastPointerPos = size == null
+                  ? null
+                  : Offset(size.width / 2, size.height / 2);
+              if (_trace) debugPrint('[KEY] 进入指针捕获');
+            }
+          },
+          child: Stack(
           children: [
             SceneView(_scene, camera: _camera, onTick: _onTick),
             // driver 调试后门（debug 构建）：无键盘注入手段时驱动跳跃/移动，
@@ -654,6 +816,7 @@ class _GameScreenState extends State<GameScreen> {
               ),
           ],
         ),
+      ),
       ),
       ),
     );
