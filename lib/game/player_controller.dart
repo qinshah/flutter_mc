@@ -112,6 +112,12 @@ class PlayerController {
   /// 在一个刻内重复注入初速；原版是 10 刻冷却，本期只保证"每刻至多一次"）。
   bool _jumpedThisTick = false;
 
+  /// 本刻**未衰减**的水平位移（格/刻），供 `collision.move` 用。
+  /// 原版 `move()` 在 `travelInAir` 的 `×0.91` 之前调用，故位移取衰减前的值。
+  double _flyVelocityThisTickX = 0;
+  double _flyVelocityThisTickY = 0;
+  double _flyVelocityThisTickZ = 0;
+
   /// 本帧跨过刻边界时攒下的**整刻竖直位移**（格）。
   /// 原版一 tick 一次 `move()`，故必须整块结算——摊到 1/120s 子步会产生
   /// "阶梯式爬升"的滞手感（2026-10-07 实机：落地/起跳像陷进海绵）。
@@ -303,42 +309,94 @@ class PlayerController {
   /// **不清零速度**（原版 `Entity.move` 只拦位置、不改 deltaMovement，清零会让
   /// 贴墙飞行像"撞停"）。
   void _flyingStep(double dt, InputState input) {
-    final flyingSpeed = abilities?.flyingSpeed ?? 0.05; // 格/刻²
+    // `input.y` = `jump - sneak`（原版 `KeyboardInput` 的竖直输入口径）。
     final inputYa = (input.jump ? 1.0 : 0.0) - (input.sneak ? 1.0 : 0.0);
 
     _flyAccumTicks += dt * 20.0;
     while (_flyAccumTicks >= 1.0) {
       _flyAccumTicks -= 1.0;
 
-      // —— 水平（REF: `LivingEntity.travelInAir` 空中分支）——
+      // —— 逐字翻译 `LivingEntity.handleRelativeFrictionAndCalculateMovement` + `travelInAir`——
+      //
+      // 判据 mc-sources/minecraft-26.2：
+      //   LivingEntity:2656  moveRelative(getFrictionInfluencedSpeed(friction), input)
+      //   LivingEntity:2658  move(MoverType.SELF, getDeltaMovement())
+      //   LivingEntity:2460  movementY -= getEffectiveGravity()
+      //   LivingEntity:2474  setDeltaMovement(× verticalFriction)      // 0.98
+      //   LivingEntity:2707  getFlyingSpeed() = getSpeed() × 0.1
+      //
+      // 顺序不可换：先按**未扣重力**的速度位移，再扣重力，最后乘摩擦。
+      // `getFrictionInfluencedSpeed` 空中返回 `getFlyingSpeed()`（:2699），
+      // 不读服务器下发的 `flyingSpeed` —— 竖直注入才读它（Player.travel 的 inputYa 路径）。
+
+      // ① moveRelative：`setDeltaMovement(δ + input × getFlyingSpeed())`
+      //   判据 Entity:1741 `moveRelative` → `setDeltaMovement(deltaMovement.add(delta))`
+      // `getFlyingSpeed()` = `getSpeed() × 0.1`（LivingEntity:2707）= 0.2156 格/刻。
+      // **不按 isSprinting 放大**——判据里没有这个分支（早先给疾跑加了 ×2，
+      // 属自行发挥；原版飞行速度与疾跑无关）。
+      final flySpeed = PlayerMotion.walkSpeed / 20.0 * 0.1;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
         final dir = (forward * input.move.y + right * input.move.x).normalized();
-        final accel = flyingSpeed * (input.sprint ? 2.0 : 1.0);
-        _flyVelocity.x = (_flyVelocity.x + dir.x * accel) * PlayerMotion.flyFriction;
-        _flyVelocity.z = (_flyVelocity.z + dir.z * accel) * PlayerMotion.flyFriction;
-      } else {
-        _flyVelocity.x *= PlayerMotion.flyFriction;
-        _flyVelocity.z *= PlayerMotion.flyFriction;
+        _flyVelocity.x += dir.x * flySpeed;
+        _flyVelocity.z += dir.z * flySpeed;
       }
+      // `moveRelative` 的 input 是三维的，竖直分量同样要加（`Player.travel`
+      // 的 inputYa = jump - sneak）。
+      _flyVelocity.y += inputYa * flySpeed;
 
-      // —— 竖直：注入后由 `Player.travel` 收尾乘 0.6（重力被覆盖 ⇒ 无重力）——
+      // ② move：位移用**未扣重力、未乘摩擦**的速度（`deltaMovement` 原值）。
+      _flyVelocityThisTickX = _flyVelocity.x;
+      _flyVelocityThisTickY = _flyVelocity.y;
+      _flyVelocityThisTickZ = _flyVelocity.z;
+
+      // travelInAir（2460/2474）：扣重力 → 乘竖直摩擦。水平同理 × 0.91（airDrag）。
       _flyVelocity.y =
-          (_flyVelocity.y + inputYa * flyingSpeed * 3.0) * PlayerMotion.flyVerticalRetain;
+          (_flyVelocity.y - PlayerMotion.gravityPerTick) * PlayerMotion.verticalFrictionPerTick;
+      _flyVelocity.x *= PlayerMotion.flyFriction;
+      _flyVelocity.z *= PlayerMotion.flyFriction;
+
+      // ③ `Player.travel` 飞行收尾（Player.java:1398）：
+      //   setDeltaMovement(y = originalMovementY * 0.6)
+      // 逐字翻译——**不引入原版没有的 `Math.max`**。原版就是拿 ① 注入后的
+      // 速度乘 0.6，之前自行解读成"max(injected, afterGravity)"会导致松手时
+      // 速度被锁死（实测收敛到 0.0002，飞行变失重悬浮）。
+      _flyVelocity.y =
+          _flyVelocityThisTickY * PlayerMotion.flyVerticalRetain;
     }
 
-    final vxPerSec = _flyVelocity.x * 20.0;
-    final vyPerSec = _flyVelocity.y * 20.0;
-    final vzPerSec = _flyVelocity.z * 20.0;
+    // 位移用**本刻未衰减**的速度（② `move(MoverType.SELF, deltaMovement)`），
+    // 衰减后的速度留到下一刻（③ 在 `move` 之后）。
+    //
+    // 原版一 tick 一次 `move()`，本实现同理（刻累加器在 `_step` 内推进）——
+    // 刻内未跨刻的子步位移为 0，与"原版一个 tick 只move 一次"完全一致。
+    final vxPerTick = _flyVelocityThisTickX;
+    final vyPerTick = _flyVelocityThisTickY;
+    final vzPerTick = _flyVelocityThisTickZ;
+    // 竖直位移**不在这里乘 dt**：原版 `super.travel` 的 `move()` 用的就是
+    // `deltaMovement`（每刻位移），上面已按 `injected` 逐刻累加进
+    // `_pendingVertical`，此处整块结算。早先误用 `vyPerSec * dt`，等于
+    // 既摊到子步又叠加刻末速度 ⇒ 速度偏高（实测 4.22 格/秒，原版应7.5）。
     final result = collision.move(
       player.bounds,
-      vxPerSec * dt,
-      vyPerSec * dt,
-      vzPerSec * dt,
+      vxPerTick,
+      vyPerTick,
+      vzPerTick,
     );
+    _flyVelocityThisTickX = 0;
+    _flyVelocityThisTickY = 0;
+    _flyVelocityThisTickZ = 0;
     // 原版 `Entity.move` 撞墙只拦位置、不改速度——**故这里不清零**。
-    player.velocity.setValues(vxPerSec, vyPerSec, vzPerSec);
+    //
+    // 暴露的速度是 `deltaMovement` 的原值：x/z 用 ③衰减**后**的值（本刻
+    // move 用的是衰减前、已存进 `_flyVelocityThisTick*`），y 用 `Player.travel`
+    // 收尾后的值（`originalMovementY × 0.6`）。×20 换算成格/秒供上层用。
+    player.velocity.setValues(
+      _flyVelocity.x * 20.0,
+      _flyVelocity.y * 20.0,
+      _flyVelocity.z * 20.0,
+    );
     player.applyMove(result);
     player.onGround = result.hitY && result.hasBlockBelow;
   }

@@ -44,14 +44,51 @@ void main() {
     expect(diagonal.move.x, 1);
   });
 
-  test('空格跳、Shift 潜行、Ctrl 疾跑', () {
+  test('空格跳、Shift 潜行（按住式）', () {
     expect(pressedInput([LogicalKeyboardKey.space]).jump, isTrue);
     expect(pressedInput([]).jump, isFalse);
 
     expect(pressedInput([LogicalKeyboardKey.shiftLeft]).sneak, isTrue);
     expect(pressedInput([LogicalKeyboardKey.shiftRight]).sneak, isTrue);
-    expect(pressedInput([LogicalKeyboardKey.controlLeft]).sprint, isTrue);
-    expect(pressedInput([LogicalKeyboardKey.controlRight]).sprint, isTrue);
+  });
+
+  group('加速（Ctrl）为切换式：按一次激活、松开移动键取消', () {
+    test('按下 Ctrl 产生边沿（sprintPressed），松开不产生', () {
+      var prevHeld = false;
+      final input = InputState();
+
+      // 第一帧按下 ⇒ 边沿
+      KeyMap.apply({LogicalKeyboardKey.controlLeft}, input,
+          sprintPrevHeld: prevHeld);
+      expect(input.sprintPressed, isTrue);
+      input.toggleSprint();
+      expect(input.sprint, isTrue);
+
+      // 下一帧仍按着 ⇒ 无边沿（不重复切换）
+      prevHeld = true;
+      KeyMap.apply({LogicalKeyboardKey.controlLeft}, input,
+          sprintPrevHeld: prevHeld);
+      expect(input.sprintPressed, isFalse);
+      expect(input.sprint, isTrue, reason: '按住期间保持激活');
+
+      // 松开 Ctrl ⇒ 也不该取消（它是切换式，不是按住式）
+      KeyMap.apply({}, input, sprintPrevHeld: prevHeld);
+      expect(input.sprint, isTrue,
+          reason: '松开 Ctrl 不取消激活——否则又变回按住式');
+    });
+
+    test('松开移动键取消激活', () {
+      final input = InputState()
+        ..move.y = 1
+        ..toggleSprint();
+      expect(input.sprint, isTrue);
+      input.clearSprintWhenNotMoving();
+      expect(input.sprint, isTrue, reason: '仍在移动 ⇒ 保持激活');
+
+      input.move.y = 0; // 松开 W
+      input.clearSprintWhenNotMoving();
+      expect(input.sprint, isFalse, reason: '松开移动键 ⇒ 取消激活');
+    });
   });
 
   group('按键集合维护（别名键同按不误停）', () {

@@ -204,12 +204,21 @@ class _GameScreenState extends State<GameScreen> {
 
   void _onKey(KeyEvent event) {
     if (KeyMap.update(_pressed, event)) {
-      KeyMap.apply(_pressed, _input);
+      KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
+      // 边沿 ⇒ 切换加速激活态（用户约定：Ctrl 按一次切换，见 InputState 注释）。
+      if (_input.sprintPressed) {
+        _input.toggleSprint();
+        if (_trace) debugPrint('[SPRINT] toggle → active=${_input.sprint}');
+      }
+      _sprintPrevHeld = KeyMap.sprintHeld(_pressed);
       if (_trace && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
         debugPrint('[KEY] space down（onGround=${_input.jump}）');
       }
     }
   }
+
+  /// 上一帧 Ctrl 是否按着（加速切换的边沿比较基准）。
+  bool _sprintPrevHeld = false;
 
   // —— 会话事件 → 场景 ——
   //
@@ -487,6 +496,9 @@ class _GameScreenState extends State<GameScreen> {
         ..move.y = 1 // 一直向前
         ..jump = _autoWalkTime % 2.0 < 0.15; // 每 2 秒按一下空格
     }
+
+    // 0.8) 加速是切换式：松开移动键即取消激活（用户约定 2026-10-07）。
+    _input.clearSprintWhenNotMoving();
 
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);

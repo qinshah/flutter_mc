@@ -49,14 +49,28 @@ class KeyMap {
   ///
   /// 用集合而不是"按下加、抬起减"，是为了让别名键（W 与 ↑）同按时，
   /// 松开其中一个不会把意图误清零。
-  static void apply(Set<LogicalKeyboardKey> pressed, InputState input) {
+  ///
+  /// [sprintPrevHeld] 是**上一帧**Ctrl 是否按着，用于取边沿——加速是**切换式**
+  /// （按一次激活，松开移动键取消，见 [InputState.sprintToggle]），需要"新按下"事件。
+  static void apply(
+    Set<LogicalKeyboardKey> pressed,
+    InputState input, {
+    bool sprintPrevHeld = false,
+  }) {
+    final sprintHeld = _held(pressed, sprint);
     input
       ..move.y = (_held(pressed, forward) ? 1 : 0) - (_held(pressed, back) ? 1 : 0)
       ..move.x = (_held(pressed, right) ? 1 : 0) - (_held(pressed, left) ? 1 : 0)
       ..jump = _held(pressed, jump)
       ..sneak = _held(pressed, sneak)
-      ..sprint = _held(pressed, sprint);
+      // 边沿：这一帧按下、上一帧没按 ⇒ 切换激活态。
+      ..sprintPressed = sprintHeld && !sprintPrevHeld
+      ..sprintToggle = input.sprintToggle;
   }
+
+  /// 取当前 Ctrl 是否按着（供下一帧做边沿比较）。
+  static bool sprintHeld(Set<LogicalKeyboardKey> pressed) =>
+      _held(pressed, sprint);
 
   static bool _held(Set<LogicalKeyboardKey> pressed, List<LogicalKeyboardKey> keys) =>
       keys.any(pressed.contains);
