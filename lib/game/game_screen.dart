@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_scene/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 import 'package:mc_render/mc_render.dart';
 import 'package:mc_session/mc_session.dart';
@@ -187,7 +188,27 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     TextureSource? atlasTexture;
     if (textures != null) {
       try {
-        atlasTexture = await loadTexture(BlockTextures.atlasAssetPath);
+        // 采样判据（原版 `client.renderer.texture`）：
+        // - `TextureAtlas.java:83` 图集采样器 = `getClampToEdge(FilterMode.NEAREST)`
+        //   ⇒ min=mag 均为 NEAREST + CLAMP_TO_EDGE——16px 贴图放大时保持像素棱角，
+        //   这是原版"方块锐利"观感的来源；flutter_scene 默认 linear（双线性放大）会糊。
+        // - `SamplerCache.java:21` createSampler(..., 1, ...) ⇒ 各向异性固定 1
+        //   （flutter_scene 在任一 filter 为 nearest 时同样自动丢弃 aniso）。
+        // - mip 层数 4：原版"mipmap"视频选项默认 4；16px sprite 到 level4 恰好
+        //   1px/sprite，封顶以免更高层把相邻 sprite 平均成一团（fscraft 同值，
+        //   flutter_scene 文档明确"图集用 maxMipmapLevels 防跨 tile 合并"）。
+        // - `TextureAtlas.java:150` 原版把 mip 存为纹理数组按 NEAREST 逐层采样，
+        //   硬件采样近似 = mipFilter nearest（级别选择最近，层内最近）。
+        atlasTexture = await loadTexture(
+          BlockTextures.atlasAssetPath,
+          sampling: const TextureSampling(
+            maxMipmapLevels: 4,
+            minFilter: gpu.MinMagFilter.nearest,
+            magFilter: gpu.MinMagFilter.nearest,
+            mipFilter: gpu.MipFilter.nearest,
+            addressMode: gpu.SamplerAddressMode.clampToEdge,
+          ),
+        );
       } catch (e) {
         if (_trace) debugPrint('[TEX] 贴图加载失败，退化为顶点色：$e');
       }
