@@ -719,10 +719,26 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     }
     return Scaffold(
       backgroundColor: const Color(0xFF87CEEB), // 3.3 接昼夜天空前的占位底色
-      body: KeyboardListener(
+      // **用 `Focus` 而不是 `KeyboardListener`**：后者在
+      // `keyboard_listener.dart:77` 无条件 `return KeyEventResult.ignored`，
+      // 文档明说 ignored 会 "propagated to other key event handlers,
+      // **even non-Flutter ones**" ⇒ 每个按键都漏回 macOS ⇒ 系统 beep
+      // （用户实机："按任何键都发无效键盘输入声"，2026-10-07）。
+      // `Focus.onKeyEvent` 能返回 `handled` 阻断冒泡，语义等价于原版 GLFW 的
+      // 独占消费（`KeyMapping.click/set` 走 GLFW 回调，不回灌系统）。
+      body: Focus(
         focusNode: _focus,
         autofocus: true,
-        onKeyEvent: _onKey,
+        onKeyEvent: (node, event) {
+          _onKey(event);
+          // 让 macOS 的 Esc 仍能退出全屏：系统级组合键交回平台。
+          final sysCombo = HardwareKeyboard.instance.isControlPressed ||
+              HardwareKeyboard.instance.isMetaPressed;
+          if (sysCombo && event.logicalKey == LogicalKeyboardKey.escape) {
+            return KeyEventResult.ignored;
+          }
+          return KeyEventResult.handled;
+        },
         child: Listener(
         onPointerMove: (event) {
           // 全屏指针→视角（fscraft 口径）。
