@@ -90,6 +90,59 @@ final class CmdInputFlags extends SessionCommand {
   final bool sprint;
 }
 
+/// 玩家命令（加速态上行；判据 `LocalPlayer.sendIsSprintingIfNeeded`，
+/// `LocalPlayer.java:304-309` → `ServerboundPlayerCommandPacket`
+/// START_SPRINTING=1 / STOP_SPRINTING=2）。
+final class CmdPlayerCommand extends SessionCommand {
+  const CmdPlayerCommand({required this.action});
+  final int action;
+}
+
+/// 位置上行（判据 `LocalPlayer.sendPosition`，`LocalPlayer.java:265-302` →
+/// `ServerboundMovePlayerPacket` 四变体；variant：0=pos、1=posRot、2=rot、
+/// 3=statusOnly）。
+final class CmdMovePlayer extends SessionCommand {
+  const CmdMovePlayer({
+    required this.variant,
+    required this.x,
+    required this.y,
+    required this.z,
+    required this.yRot,
+    required this.xRot,
+    required this.onGround,
+    required this.horizontalCollision,
+  });
+  final int variant;
+  final double x;
+  final double y;
+  final double z;
+  final double yRot;
+  final double xRot;
+  final bool onGround;
+  final bool horizontalCollision;
+}
+
+/// 手持槽位上行（判据 `MultiPlayerGameMode.ensureHasSentCarriedItem`，
+/// `MultiPlayerGameMode.java:317-323` → `ServerboundSetCarriedItemPacket`）。
+final class CmdCarriedItem extends SessionCommand {
+  const CmdCarriedItem({required this.slot});
+  final int slot;
+}
+
+/// 创造模式设置槽位（判据 `MultiPlayerGameMode.java:491-495` →
+/// `ServerboundSetCreativeModeSlotPacket`）。
+final class CmdCreativeModeSlot extends SessionCommand {
+  const CmdCreativeModeSlot({
+    required this.slot,
+    required this.itemId,
+    required this.count,
+  });
+
+  final int slot;
+  final int itemId;
+  final int count;
+}
+
 /// 关闭会话。
 final class CmdClose extends SessionCommand {
   const CmdClose();
@@ -112,6 +165,47 @@ final class SessionHandle {
   /// 飞行切换上报。
   void sendAbilities({required bool flying}) =>
       commands.send(CmdAbilities(flying: flying));
+
+  /// 加速态上行（entityId 由会话侧以登录包的 playerId 填，判据
+  /// `ServerboundPlayerCommandPacket` 构造传 `entity`=本地玩家）。
+  void sendSprinting({required bool sprinting}) =>
+      commands.send(CmdPlayerCommand(action: sprinting ? 1 : 2));
+
+  /// 手持槽位上行（会话侧按 carriedIndex 去重，等价原版 ensure 判据）。
+  void sendCarriedItem({required int slot}) =>
+      commands.send(CmdCarriedItem(slot: slot));
+
+  /// 位置上行（vanilla 每 tick 由 LocalPlayer.sendPosition 判定变体后发送；
+  /// 服务器的区块流窗口、反作弊全挂在它更新出的"相信位置"上——缺了它
+  /// 区块永远发在旧位置周围，2026-10-07 实机日志证实）。
+  void sendMovePlayer({
+    required int variant,
+    required double x,
+    required double y,
+    required double z,
+    required double yRot,
+    required double xRot,
+    required bool onGround,
+    required bool horizontalCollision,
+  }) =>
+      commands.send(CmdMovePlayer(
+        variant: variant,
+        x: x,
+        y: y,
+        z: z,
+        yRot: yRot,
+        xRot: xRot,
+        onGround: onGround,
+        horizontalCollision: horizontalCollision,
+      ));
+
+  /// 创造模式设置槽位（创造物品栏点选；会话侧按 hasInfiniteMaterials 门控）。
+  void sendCreativeModeSlot({
+    required int slot,
+    required int itemId,
+    required int count,
+  }) =>
+      commands.send(CmdCreativeModeSlot(slot: slot, itemId: itemId, count: count));
 
   /// 输入标志上报（isolate 内去重，可每 tick 调用）。
   void sendInputFlags({
@@ -225,6 +319,24 @@ Future<void> _entry(_IsolateConfig config) async {
         session.sendSwing(hand: c.hand);
       case final CmdAbilities c:
         session.sendAbilities(flying: c.flying);
+      case final CmdPlayerCommand c:
+        session.sendPlayerCommand(action: c.action);
+      case final CmdMovePlayer c:
+        session.sendMovePlayer(
+          variant: c.variant,
+          x: c.x,
+          y: c.y,
+          z: c.z,
+          yRot: c.yRot,
+          xRot: c.xRot,
+          onGround: c.onGround,
+          horizontalCollision: c.horizontalCollision,
+        );
+      case final CmdCarriedItem c:
+        session.sendCarriedItem(slot: c.slot);
+      case final CmdCreativeModeSlot c:
+        session.sendCreativeModeSlot(
+            slot: c.slot, itemId: c.itemId, count: c.count);
       case final CmdInputFlags c:
         session.sendInputFlagsIfChanged(
           forward: c.forward,

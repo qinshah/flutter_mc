@@ -489,6 +489,7 @@ final class RemoteSession {
 
   void _handleLogin(GameLogin login) {
     _playPhase = true;
+    _selfEntityId = login.playerId;
     _ingestor = ChunkIngestor();
     _events.add(JoinedGame(login));
     // ServerboundPlayerLoaded（notes 1.2 #11：60 tick 内不发则移动被静默忽略）
@@ -672,10 +673,92 @@ final class RemoteSession {
 
   /// 飞行切换上报（REF: LocalPlayer.onUpdateAbilities → ServerboundPlayerAbilitiesPacket，
   /// 仅 1 字节 flying 位）。
+  /// 本地玩家实体 id（登录包 `GameLogin.playerId`，PlayerCommand 用）。
+  int _selfEntityId = 0;
+
+  /// 上次已上报的手持槽位（判据 `MultiPlayerGameMode.carriedIndex`，:87）。
+  int _carriedIndex = -1;
+
+  /// 手持槽位上行（判据 `MultiPlayerGameMode.ensureHasSentCarriedItem`，
+  /// `MultiPlayerGameMode.java:317-323`：selectedSlot != carriedIndex 才发
+  /// `ServerboundSetCarriedItemPacket(short slot)`；原版在 gameMode.tick 每刻
+  /// ensure，本仓由 app 壳每刻调用本方法）。
+  void sendCarriedItem({required int slot}) {
+    if (!_playPhase || _closed) return;
+    if (slot == _carriedIndex) return; // :319 变化才发
+    _carriedIndex = slot;
+    _sendTyped(ProtocolPhase.play, SetCarriedItem(slot: slot));
+  }
+
+  /// 位置上行（判据 `LocalPlayer.sendPosition`，`LocalPlayer.java:265-302`；
+  /// 变体判定在 app 壳 PositionSync，会话只负责按变体打包四类包——
+  /// `ServerboundMovePlayerPacket.Pos/PosRot/Rot/StatusOnly`，flags 位
+  /// onGround=0x01 / horizontalCollision=0x02，`ServerboundMovePlayerPacket.java:10-11`）。
+  void sendMovePlayer({
+    required int variant,
+    required double x,
+    required double y,
+    required double z,
+    required double yRot,
+    required double xRot,
+    required bool onGround,
+    required bool horizontalCollision,
+  }) {
+    if (!_playPhase || _closed) return;
+    final MovePlayer packet;
+    switch (variant) {
+      case 0:
+        packet = MovePlayer.pos(x, y, z,
+            onGround: onGround, horizontalCollision: horizontalCollision);
+      case 1:
+        packet = MovePlayer.posRot(x, y, z, yRot, xRot,
+            onGround: onGround, horizontalCollision: horizontalCollision);
+      case 2:
+        packet = MovePlayer.rot(yRot, xRot,
+            onGround: onGround, horizontalCollision: horizontalCollision);
+      default:
+        packet = MovePlayer.statusOnly(
+            onGround: onGround, horizontalCollision: horizontalCollision);
+    }
+    _sendTyped(ProtocolPhase.play, packet);
+  }
+
+  /// 加速态上行（判据 `LocalPlayer.sendIsSprintingIfNeeded`，
+  /// `LocalPlayer.java:304-309`：isSprinting 变化才发——去重在 LocalPlayer
+  /// 侧完成（_setSprinting 只在变化时回调），START_SPRINTING=1 / STOP_SPRINTING=2，
+  /// 构造传本地玩家实体）。
+  void sendPlayerCommand({required int action}) {
+    if (!_playPhase || _closed) return;
+    _sendTyped(
+      ProtocolPhase.play,
+      PlayerCommand(entityId: _selfEntityId, action: action),
+    );
+  }
+
   void sendAbilities({required bool flying}) {
     if (!_playPhase || _closed) return;
     _serverFlying = flying;
     _sendTyped(ProtocolPhase.play, PlayerAbilitiesOut(flying: flying));
+  }
+
+  /// 创造模式设置槽位（判据 `MultiPlayerGameMode.handleCreativeModeItemAdd`，
+  /// `MultiPlayerGameMode.java:491-495`：`hasInfiniteMaterials()` 为真才发）。
+  ///
+  /// `hasInfiniteMaterials()` 的本仓对应：服务器下发的创造能力。当前会话唯一
+  /// 可用信号是 abilities 的 mayfly（创造玩家恒 mayfly=true；生存为 false）。
+  /// 更精确的 instabuild 位尚未入库（PlayerAbilitiesIn 已解析但会话未存储，
+  /// 补齐时改门控即可——行为不变，只是门更准）。
+  void sendCreativeModeSlot({
+    required int slot,
+    required int itemId,
+    required int count,
+  }) {
+    if (!_playPhase || _closed) return;
+    if (!_mayfly) return; // hasInfiniteMaterials 门控（:492）
+    _sendTyped(
+      ProtocolPhase.play,
+      SetCreativeModeSlot(slotNum: slot, itemId: itemId, count: count),
+    );
   }
 
   PlayerInputFlags? _lastSentInput;
