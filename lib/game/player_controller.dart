@@ -23,6 +23,15 @@ class PlayerMotion {
   /// 每刻空气阻力 → 连续阻尼系数：`k = -ln(0.98) × 20 ≈ 0.404 /s`。
   static const double airDragPerTick = 0.98;
 
+  /// `Attributes.MOVEMENT_SPEED` 的**属性值**（判据 `Player:209`
+  /// `add(Attributes.MOVEMENT_SPEED, 0.1F)`）。
+  ///
+  /// **这不是格/秒**——原版速度有两套量纲，别混：
+  /// - **属性值** 0.1：喂给 `getFlyingSpeed()`（空中飞行）⇒ ×0.1 = 0.01 格/刻
+  /// - **格/秒** 4.317：`getFrictionInfluencedSpeed` 地面分支乘 `0.216/friction³`
+  ///   后得到格/刻，再 ×20 才是格/秒。
+  static const double moveSpeedAttribute = 0.1;
+
   static const double walkSpeed = 4.317;
   static const double sprintSpeed = 5.612;
   static const double sneakSpeed = 1.295;
@@ -331,10 +340,21 @@ class PlayerController {
 
       // ① moveRelative：`setDeltaMovement(δ + input × getFlyingSpeed())`
       //   判据 Entity:1741 `moveRelative` → `setDeltaMovement(deltaMovement.add(delta))`
-      // `getFlyingSpeed()` = `getSpeed() × 0.1`（LivingEntity:2707）= 0.2156 格/刻。
-      // **不按 isSprinting 放大**——判据里没有这个分支（早先给疾跑加了 ×2，
-      // 属自行发挥；原版飞行速度与疾跑无关）。
-      final flySpeed = PlayerMotion.walkSpeed / 20.0 * 0.1;
+      // `getFlyingSpeed()` = `getSpeed() × 0.1`（LivingEntity:2707）。
+      //
+      // **`getSpeed()` 是属性值 0.1，不是格/秒**（判据 Player:209
+      // `Attributes.MOVEMENT_SPEED, 0.1F`）。所以：
+      //   getFlyingSpeed() = 0.1 × 0.1 = **0.01 格/刻 = 0.2 格/秒**
+      //
+      // **别拿 [PlayerMotion.walkSpeed]（格/秒）去反推**——那是地面行走速度，
+      // 走的是另一套口径（`getFrictionInfluencedSpeed` 地面分支乘 0.216/friction³，
+      // LivingEntity:2700-2702）。早先误用 `walkSpeed / 20 × 0.1` = 0.2156 格/刻，
+      // 比原版快 21 倍（实机反馈"飞行慢得像蜗牛"就是这个反向偏快）。
+      //
+      // 原版飞行确实**很慢**（0.2 格/秒），这是判据，不是 bug。
+      //
+      // **不按 isSprinting 放大**——判据里没有这个分支（原版飞行速度与疾跑无关）。
+      final flySpeed = PlayerMotion.moveSpeedAttribute * 0.1;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));

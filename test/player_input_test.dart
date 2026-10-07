@@ -18,7 +18,8 @@ class EmptyWorld implements CollisionWorld {
 
 /// 飞行 1 秒后的**竖直位移**（含首帧相位，与真实 tick 驱动一致）。
 ///
-/// 判据黄金值见下方测试：逐字翻译 `Player.travel` + `LivingEntity` 得0.9443 格/秒。
+/// 判据黄金值见下方测试：逐字翻译 `Player.travel` + `LivingEntity` 得
+/// 0.4375 格/秒（原版创造飞行确实很慢，别按"看起来不对"去调）。
 double _flyFor(void Function(InputState) setup) {
   final controller = PlayerController(
     world: EmptyWorld(),
@@ -136,7 +137,7 @@ void main() {
   // 在下一子步立刻补上，故长期速率仍精确 20 刻/秒，只是相位差一刻）。
   // 理论终速：竖直 4.5 格/秒、水平 10.11（疾跑 20.22），1 秒尚未收敛到终速。
 
-  test('飞行竖直：逐字翻译 Player.travel → 上下严格对称、0.9443 格/秒', () {
+  test('飞行竖直：逐字翻译 Player.travel → 上下严格对称、0.4375 格/秒', () {
     // 判据 mc-sources/minecraft-26.2，逐字翻译（顺序不可换）：
     //   LivingEntity:2656  moveRelative(getFrictionInfluencedSpeed) —— δ + input×flySpeed
     //   LivingEntity:2707  getFlyingSpeed() = getSpeed()×0.1 = 0.2156 格/刻
@@ -144,11 +145,13 @@ void main() {
     //   Player:1398setDeltaMovement(y = originalMovementY × 0.6)
     //
     // **收尾的 ×0.6 覆盖 travelInAir 的扣重力结果**（不是相乘、也不是 max）。
-    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：上升 +0.9443 / 下降 -0.9443。
+    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：上升 +0.4375 / 下降 -0.4375。
+    // 量纲关键：`getSpeed()` 是**属性值 0.1**（Player:209），不是格/秒 ⇒
+    // getFlyingSpeed() = 0.01 格/刻 = 0.2 格/秒。原版飞行就是慢。
     final up = _flyFor((i) => i.jump = true);
     final down = _flyFor((i) => i.sneak = true);
-    expect(up, closeTo(0.9443, 1e-3));
-    expect(down, closeTo(-0.9443, 1e-3));
+    expect(up, closeTo(0.4375, 1e-3));
+    expect(down, closeTo(-0.4375, 1e-3));
     // **上下严格对称**——这是用户实机反馈的问题（"上升和下降速度不一样"）。
     expect(up, closeTo(-down, 1e-6));
 
@@ -161,10 +164,10 @@ void main() {
   test('飞行水平：getFlyingSpeed=getSpeed×0.1、位移用未衰减值 → 2.536 格/秒', () {
     // 判据 LivingEntity:2656→2658 + 2474：
     //   ① moveRelative：δ + input × 0.2156   ② move 用**未衰减**值   ③ × airDrag 0.91
-    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：2.5360 格。
-    // yaw=0 时前方向是 −Z，故位移为负（判据黄金值 2.5360 格）。
+    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：1.1749 格。
+    // yaw=0 时前方向是 −Z，故位移为负（判据黄金值 1.1749 格）。
     final walk = _flyForHorizontal((i) => i.move.y = 1);
-    expect(walk, closeTo(-2.5360, 1e-3));
+    expect(walk, closeTo(-1.1749, 1e-3));
 
     // **疾跑不改变飞行速度**——判据 `getFlyingSpeed()` 只看 getSpeed()，
     // 不看 isSprinting（早先给飞行加了 ×2 疾跑倍率，属自行发挥）。
@@ -206,6 +209,6 @@ void main() {
     }
     expect(fast.player.velocity.y, closeTo(normal.player.velocity.y, 1e-9),
         reason: '判据不看 abilities.flyingSpeed，两者应完全一致');
-    expect(fast.player.position.y - 100, closeTo(0.9443, 1e-3));
+    expect(fast.player.position.y - 100, closeTo(0.4375, 1e-3));
   });
 }
