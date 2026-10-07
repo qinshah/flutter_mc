@@ -54,6 +54,78 @@ class BlockModels {
     return i >= 0 ? path.substring(i + 1) : path;
   }
 
+  /// 26.2 的**十字面片模板**（jar 内共 88 个模型以此为 parent）。
+  ///
+  /// 判据来源：逐个读 `models/block/*.json` 的 `parent` 字段统计得出——
+  ///   - `block/cross`（如 `kelp`/`kelp_plant`）
+  ///   - `block/tinted_cross`（生物群系着色的十字，如 `short_grass`/`sugar_cane`）
+  ///   - `block/template_seagrass`（海草，两片正交薄板）
+  ///
+  /// 三者的共同形态都是"两张（或四张）**零厚度薄面片**"，语义即十字面片，
+  /// 与原版渲染层 `CUTOUT` 的处理一致。
+  static const Set<String> crossTemplateParents = {
+    'block/cross',
+    'block/tinted_cross',
+    'block/template_seagrass',
+  };
+
+  /// 该方块的模型是否**十字面片**（cross）。
+  ///
+  /// **为什么用它替代手写名单**：原版把"方块 → 渲染层"的完整注册表放在
+  /// `BlockRenderLayer`，该类已编译进客户端渲染库、`mc-sources` 中不存在
+  /// （全树 grep 零命中）；而模型的 parent 链是可得的等价判据，且比手写名单
+  /// 完备（新版本方块自动被覆盖）。
+  Future<bool> isCrossModel(String blockId) async {
+    final modelPath = await _resolveModelPath(blockId);
+    if (modelPath == null) return false;
+    return _hasCrossAncestor(modelPath, 0);
+  }
+
+  /// 沿 parent 链查是否命中 [crossTemplateParents]（子覆盖父）。
+  Future<bool> _hasCrossAncestor(String modelPath, int depth) async {
+    if (depth > 16) return false; // 防御：异常 parent 环
+    final path = _stripNs(modelPath);
+    if (crossTemplateParents.contains(path)) return true;
+    final text = await _pack.readString('models/$path.json');
+    if (text == null) return false;
+    final parent = (jsonDecode(text) as Map<String, dynamic>)['parent'];
+    if (parent is! String) return false;
+    return _hasCrossAncestor(parent, depth + 1);
+  }
+
+  /// 从 blockstate 解析出模型路径（variants/multipart 两种形态取首个）。
+  Future<String?> _resolveModelPath(String blockId) async {
+    // 与 [resolve] 同口径：**剥掉命名空间**再拼 blockstates 路径
+    // （`minecraft:short_grass` → `blockstates/short_grass.json`）。
+    final name = blockId.split(':').last;
+    final stateText = await _pack.readString('blockstates/$name.json');
+    if (stateText == null) return null;
+    final state = jsonDecode(stateText) as Map<String, dynamic>;
+    final variants = state['variants'];
+    if (variants is Map<String, dynamic> && variants.isNotEmpty) {
+      final entry = variants.values.first;
+      if (entry is Map<String, dynamic>) return entry['model'] as String?;
+      final parts = (entry as List?)?.whereType<Map<String, dynamic>>().toList();
+      if (parts != null && parts.isNotEmpty) {
+        return parts.first['model'] as String?;
+      }
+    }
+    final multipart = state['multipart'];
+    if (multipart is List && multipart.isNotEmpty) {
+      final first = multipart.first;
+      if (first is Map<String, dynamic>) {
+        final apply = first['apply'];
+        if (apply is Map<String, dynamic>) {
+          final one = apply['model'];
+          if (one is String) return one;
+          final many = (apply['model'] as List?)?.whereType<String>().toList();
+          if (many != null && many.isNotEmpty) return many.first;
+        }
+      }
+    }
+    return null;
+  }
+
   /// 沿 parent 链收集贴图映射（子覆盖父）。
   Future<void> _collectModelTextures(
     String modelPath,

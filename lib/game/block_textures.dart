@@ -89,6 +89,37 @@ class BlockTextures {
     return textures;
   }
 
+  /// 构建期扫描全部方块，得出**十字面片方块名集合**（判据驱动，供
+  /// `BlockSemanticsV262` 注入，取代手写名单）。
+  ///
+  /// 判据：模型 parent 链命中 `BlockModels.crossTemplateParents`
+  /// （`block/cross` / `block/tinted_cross` / `block/template_seagrass`）。
+  /// 这三个模板的共同形态是"零厚度薄面片"，语义即十字面片。
+  ///
+  /// 判据来源说明：原版的"方块 → 渲染层"完整注册表在 `BlockRenderLayer`，
+  /// 该类已编译进客户端渲染库、`mc-sources` 中不存在（全树 grep 零命中），
+  /// 故改用模型 parent 链这一可得判据——比手写名单完备（新方块自动覆盖）。
+  Future<Set<String>> buildCrossBlockSet() async {
+    final result = <String>{};
+    for (final name in _allBlockNames) {
+      if (await _models.isCrossModel('minecraft:$name')) result.add(name);
+    }
+    return result;
+  }
+
+  /// 资源包里全部方块名（来自 blockstates 目录清单）。
+  ///
+  /// [VanillaPack] 未暴露"列目录"，故用**已知方块清单**兜底：取自区块调色板
+  /// 的 state身份串（`kBlockStateIdentity262`，官方 data generator 产物）。
+  static Set<String> get _allBlockNames {
+    final seen = <String>{};
+    for (final identity in kBlockStateIdentity262.values) {
+      final n = BlockSemanticsV262.blockNameOfStateIdentity(identity);
+      if (n.isNotEmpty && n != 'unknown') seen.add(n);
+    }
+    return seen;
+  }
+
   /// 后台解析一个方块名的模型（去重；完成后通知调用方重做 UV）。
   void _requestResolve(String name) {
     if (!_pending.add(name)) return;

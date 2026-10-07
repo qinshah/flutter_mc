@@ -65,7 +65,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 网格化最热的一环（每格每面都要问），而 `BlockSemanticsV262` 每次都做
   /// stateId → 身份串的字符串解析 + contains/startsWith 判定。缓存后每个 stateId
   /// 只算一次。**注意**：不缓存时视距内几百列的网格化会把主 isolate 卡死（实测）。
-  final MeshSemanticsCache _semantics =
+  late MeshSemanticsCache _semantics =
       MeshSemanticsCache(const BlockSemanticsV262());
 
   /// 待网格化的段（脏队列 + 去重集合）。
@@ -153,6 +153,16 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _blockTextures = textures;
     // 贴图是**按需**解析的：解析出一个新方块后，已用兜底 UV 网格化的段要重做。
     textures?.onResolved = _markAllSectionsDirty;
+    // 分类判据（block-geometry B）：构建期扫全量模型，按 parent 链得出十字面片
+    // 方块集，注入 semantics——取代原 40 项手写名单（判据缺失说明见
+    // `BlockSemanticsV262` 类文档）。
+    if (textures != null) {
+      final cross = await textures.buildCrossBlockSet();
+      _semantics = MeshSemanticsCache(BlockSemanticsV262(crossBlocks: cross));
+      if (_trace) {
+        debugPrint('[SEM] 判据驱动的 cross 方块 ${cross.length} 个');
+      }
+    }
     if (_trace) {
       // 贴图链路取证：null 表示资源包/图集没读到（会退化成纯顶点色）。
       debugPrint(textures == null
