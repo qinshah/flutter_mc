@@ -118,6 +118,101 @@ void main() {
     expect(touchdowns, greaterThanOrEqualTo(2));
   });
 
+  test('跳跃：位移按整刻跳变（不摊到子步 ⇒ 无海绵滞手感）', () {
+    // 回归防护：曾把 1/120s 的 dt 乘进刻速度，等于"一个刻的位移在 6 个子步里
+    // 重复用"⇒ 视觉上阶梯式慢速爬升，2026-10-07 实机反馈"像陷进海绵"。
+    // 原版 `move(MoverType.SELF, deltaMovement)` 是**一 tick 一次**整块位移。
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 0.0, 0.5);
+    const dt = 1 / 120;
+    final input = InputState()..jump = true;
+
+    var prevY = player.position.y;
+    final jumps = <double>[]; // 每帧的 dy，非零的应是"整刻位移"
+    for (var i = 0; i < 40; i++) {
+      controller.tick(dt, input);
+      final dy = player.position.y - prevY;
+      if (dy.abs() > 1e-9) jumps.add(dy);
+      prevY = player.position.y;
+    }
+    expect(jumps.length, greaterThanOrEqualTo(3));
+    // 第一跳的头几步应恰为整刻位移（初速 0.42 格 = 8.4 格/秒 ÷ 20），
+    // 随后按原版逐刻递减（×0.98并扣重力）。若把刻速度摊到1/120s 子步，
+    // 首个位移会缩成 0.42/6 ≈ 0.07 格 ⇒ 断言失败。
+    expect(jumps[0], closeTo(8.4 / 20.0, 1e-6));
+    expect(jumps[1], closeTo(0.3332, 1e-3));
+    expect(jumps[2], closeTo(0.2481, 1e-3));
+    // 单调递减（爬升期）
+    for (var i = 1; i < jumps.length; i++) {
+      expect(jumps[i], lessThanOrEqualTo(jumps[i - 1]));
+    }
+  });
+
+  test('跳跃：落地无下陷——落地后 y 不再抖动', () {
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 3.0, 0.5); // 从 3 格高落下
+    const dt = 1 / 120;
+    final input = InputState();
+    for (var i = 0; i < 400; i++) {
+      controller.tick(dt, input);
+    }
+    expect(player.onGround, isTrue);
+    final restY = player.position.y;
+    // 静止后不应再有位移（"海绵"感的另一半：贴地持续微抖）。
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, input);
+    }
+    expect((player.position.y - restY).abs(), lessThan(1e-9));
+    expect(player.velocity.y, 0);
+  });
+
+  test('渲染：物理 20Hz 阶梯但渲染位置线性插值（不卡顿）', () {
+    // 判据 `EntityRenderer.createRenderState`（mc-sources/minecraft-26.2:164）：
+    // `Mth.lerp(partialTicks, entity.xOld, entity.getX())`。原版物理跑 20Hz，
+    // 渲染靠上一刻→当前刻的插值保持顺滑；缺插值会"一卡一卡地爬"。
+    final player = Player();
+    final controller = PlayerController(
+      world: JumpStepWorld(),
+      player: player,
+      abilities: AbilitiesSnapshot(mayfly: false),
+    );
+    player.position.setValues(0.5, 0.0, 0.5);
+    const dt = 1 / 120;
+    final input = InputState()..jump = true;
+
+    // 物理位置的台阶数（应远少于帧数）
+    var physSteps = 0;
+    var prevPhys = player.position.y;
+    // 渲染位置的帧间差（应每帧都非零 ⇒ 平滑）
+    final renderDeltas = <double>[];
+    var prevEye = player.eyePosition.y;
+
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, input);
+      final phys = player.position.y;
+      if ((phys - prevPhys).abs() > 1e-9) physSteps++;
+      prevPhys = phys;
+      final eye = player.eyePosition.y;
+      final d = eye - prevEye;
+      if (d.abs() > 1e-6) renderDeltas.add(d);
+      prevEye = eye;
+    }
+    // 物理是 20Hz ⇒ 60 帧（0.5s）内约 10 个台阶，不是 60 次。
+    expect(physSteps, lessThan(20));
+    // 渲染却在同一区间内持续平滑变化（帧数远多于台阶数）。
+    expect(renderDeltas.length, greaterThan(physSteps * 3));
+  });
+
   test('跳跃：落地后竖直速度归零（不残留影响下次起跳）', () {
     final player = Player();
     final controller = PlayerController(

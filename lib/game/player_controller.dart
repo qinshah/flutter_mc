@@ -112,6 +112,11 @@ class PlayerController {
   /// 在一个刻内重复注入初速；原版是 10 刻冷却，本期只保证"每刻至多一次"）。
   bool _jumpedThisTick = false;
 
+  /// 本帧跨过刻边界时攒下的**整刻竖直位移**（格）。
+  /// 原版一 tick 一次 `move()`，故必须整块结算——摊到 1/120s 子步会产生
+  /// "阶梯式爬升"的滞手感（2026-10-07 实机：落地/起跳像陷进海绵）。
+  double _pendingVertical = 0;
+
   /// 用一帧的真实 `dt` 驱动：内部按 [PlayerMotion.fixedStep] 固定步长累加。
   void tick(double dt, InputState input) {
     // 视角**每帧只应用一次**：`lookDelta` 是"这一帧转了多少"，若放进固定步长
@@ -200,26 +205,33 @@ class PlayerController {
     _verticalTickAccum += dt;
     while (_verticalTickAccum >= PlayerMotion.tickSeconds) {
       _verticalTickAccum -= PlayerMotion.tickSeconds;
+      // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `EntityRenderer` 的 `xOld`）。
+      player.yOld = player.position.y;
       _advanceVerticalTick(jumpPower);
-      // 新的一刻⇒ 允许再次注入跳跃初速（原版 `noJumpDelay = 10` 是 10 刻冷却，
+      // 新的一刻 ⇒ 允许再次注入跳跃初速（原版 `noJumpDelay = 10` 是 10 刻冷却，
       // 本期只保证"每刻至多注入一次"，按住空格即可连续跳）。
       _jumpedThisTick = false;
     }
 
     // 对外暴露的竖直速度 = 刻速度 ×20（与 [Player.velocity] 的格/秒口径一致）。
-    // 必须在碰撞**之前**同步：位移用的是 `_vyTicks`，而 `player.velocity.y`
-    // 是给上层（渲染/上行/探针）读的，不同步会出现"在飞但 vy 显示 0"。
     player.velocity.y = _vyTicks * 20.0;
 
-    // —— 位移与碰撞 ——（`VoxelCollision.move` 内部已按最长轴拆子步）
-    // 竖直位移用**本刻未扣重力**的刻速度 `_vyTicks`（原版 `move()` 在
-    // `travelInAir` 扣重力之前调用，见 handleRelativeFrictionAndCalculateMovement）。
+    // —— 竖直位移：按**整刻**结算，不摊到 1/120s 子步 ——
+    //
+    // 原版 `handleRelativeFrictionAndCalculateMovement` 里`move(MoverType.SELF,
+    // deltaMovement)` 用的是 `deltaMovement`（**每刻位移**），一 tick 一次。
+    // 若把 1/120s 的 dt 乘进刻速度，就等于"一个刻的位移在 6 个子步里重复用"，
+    // 视觉上就成了**阶梯式慢速爬升**——手感像陷进海绵（2026-10-07 实机反馈）。
+    //
+    // `_pendingVertical` 记录"本帧跨过刻边界时攒下的整刻位移"，在子步里
+    // **只结算一次**，其余子步竖直位移为 0（水平照旧逐子步求交，防穿墙）。
     final result = collision.move(
       player.bounds,
       player.velocity.x * dt,
-      _vyTicks * 20.0 * dt,
+      _pendingVertical,
       player.velocity.z * dt,
     );
+    _pendingVertical = 0;
     // 被挡的轴速度清零（贴墙滑动由 collision 的逐轴求解保证）。
     if (result.hitX) player.velocity.x = 0;
     if (result.hitZ) player.velocity.z = 0;
@@ -241,6 +253,11 @@ class PlayerController {
       player.velocity.y = 0;
     }
     player.onGround = grounded;
+
+    // 渲染插值进度：本子步结束时本刻已过的比例（判据 `partialTicks`）。
+    // 相机读 [Player.eyePosition]（已插值），物理读 [Player.position]（不插值）。
+    player.tickProgress =
+        (_verticalTickAccum / PlayerMotion.tickSeconds).clamp(0.0, 1.0);
   }
 
   /// 推进一个刻的竖直运动学（REF 见 [PlayerMotion] 的时序注释）。
@@ -248,9 +265,10 @@ class PlayerController {
   /// 顺序严格照原版：**先按当前速度积分位置，再扣重力、乘阻力**。
   /// 反过来做会让跳高掉到 0.9969 格（跳不上 1 格高方块）。
   void _advanceVerticalTick(double jumpPower) {
-    // ① 位移（由调用方在固定步内用 `_vyTicks` 积分进位置）；
-    //    这里只更新速度——位置积分在 `_step` 的 collision.move 里按 dt 摊还。
-    // ② 扣重力（`travelInAir`：movementY -= getEffectiveGravity()）
+    // ① **位移**：原版此刻调`move()`，用的是**本刻未扣重力**的 vy（源码 2657）。
+    // 累加到 `_pendingVertical`，由本帧的下一次 `collision.move` **整块**结算。
+    _pendingVertical += _vyTicks;
+    // ② 扣重力（`travelInAir`：movementY -= getEffectiveGravity()`）
     var vy = _vyTicks - PlayerMotion.gravityPerTick;
     // ③ 乘竖直摩擦（`setDeltaMovement(... * verticalFriction)`）
     vy *= PlayerMotion.verticalFrictionPerTick;

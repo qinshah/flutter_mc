@@ -29,8 +29,35 @@ class Player {
     position.setValues(r.centerX, r.minY, r.centerZ);
   }
 
-  Vector3 get eyePosition =>
-      Vector3(position.x, position.y + Aabb.eyeHeight, position.z);
+  /// 上一**刻**的脚底 y（渲染插值的起点）。
+  ///
+  /// 判据 `EntityRenderer.createRenderState`（mc-sources/minecraft-26.2:164）：
+  /// `state.x = Mth.lerp(partialTicks, entity.xOld, entity.getX())`——原版客户端
+  /// 物理只跑 20Hz，但渲染用「上一刻位置 → 当前刻位置」按 `partialTicks` 线性插值，
+  /// 于是视觉上依旧顺滑。
+  ///
+  /// **缺了插值会怎样**：物理严格照原版 20Hz 推进（这才是跳得上一格的关键），
+  /// 但画面每tick（1/20 秒）才跳一次 ⇒ 高帧率下表现为"一卡一卡地爬"。
+  double yOld = 0;
+
+  /// 刻进度 [0,1)：本刻已过的比例，由 [PlayerController] 每子步推进。
+  double tickProgress = 0;
+
+  /// 渲染用的插值位置（脚底）。
+  Vector3 get interpolatedPosition {
+    if (tickProgress <= 0) return position;
+    return Vector3(
+      position.x,
+      yOld + (position.y - yOld) * tickProgress,
+      position.z,
+    );
+  }
+
+  /// 渲染用的插值眼睛位置（相机用这个，物理仍用 [position]）。
+  Vector3 get eyePosition {
+    final p = interpolatedPosition;
+    return Vector3(p.x, p.y + Aabb.eyeHeight, p.z);
+  }
 
   Vector3 get lookDirection {
     final cosPitch = math.cos(pitch);
