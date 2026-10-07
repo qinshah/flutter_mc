@@ -6,7 +6,12 @@ plugins {
 
 android {
     namespace = "com.qshh.flutter_mc"
-    compileSdk = flutter.compileSdkVersion
+    // 不用 flutter.compileSdkVersion（=36）：permission_handler_android 14.x 的
+    // AAR 元数据要求依赖方至少用 37 编译，否则 :app:checkReleaseAarMetadata 直接
+    // 报 "requires libraries and applications that depend on it to compile against
+    // version 37 or later"。compileSdk 只影响"能用哪些新 API"，与 targetSdk（运行
+    // 期行为）和 minSdk（可安装范围）互不相干，向后兼容，所以单独抬高它没副作用。
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

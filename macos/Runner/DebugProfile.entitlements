@@ -2,8 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 任意路径读写：关掉 App Sandbox。
+	     沙箱打开时只有两条路可走，都**不是**任意路径：
+	       · com.apple.security.files.user-selected.read-write → 只有用户在
+	         文件选择器里挑中的那一个（或 .app 作用域 bookmark）；
+	       · com.apple.security.files.downloads.* → 只有 ~/Downloads。
+	     临时例外（temporary-exception.files.absolute-path.read-write）也不行：
+	     它只接受具体路径、且公证时会被标为受限项。
+	     所以要读写任意路径，唯一干净的办法就是沙箱置 false —— 关闭后
+	     network.client/server 不再起作用（沙箱才有），保留它们只为将来
+	     重新打开沙箱时不至于断网。代价：无法上架 Mac App Store。 -->
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

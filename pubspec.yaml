@@ -40,6 +40,8 @@ dependencies:
   # 调用，只在构建期跑）。列在常规依赖里是因为它经 flutter_scene 本就传递进来，
   # 且 lint depend_on_referenced_packages 对 hook/ 这类非 test/tool 目录只认常规依赖。
   hooks: ^2.0.0
+  pointer_lock: ^0.4.2+1
+  permission_handler: ^13.0.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

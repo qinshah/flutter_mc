@@ -1,15 +1,19 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_scene/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 import 'package:mc_render/mc_render.dart';
 import 'package:mc_session/mc_session.dart';
+import 'package:mc_ui/mc_ui.dart';
+import 'package:pointer_lock/pointer_lock.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'block_icon.dart';
 import 'block_textures.dart';
 import 'column_section_view.dart';
 import 'engine_space.dart';
@@ -17,9 +21,14 @@ import 'package:flutter_mc/world/entity/player/input.dart';
 import 'key_map.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
 import 'package:flutter_mc/world/entity/player/abilities.dart';
+import 'package:flutter_mc/client/gui/gui.dart';
+import 'package:flutter_mc/client/gui/screens/inventory/creative_mode_inventory_screen.dart';
+import 'package:flutter_mc/client/mouse_handler.dart';
 import 'package:flutter_mc/client/player/local_player.dart';
+import 'package:flutter_mc/client/player/position_sync.dart';
 import 'session_collision_world.dart';
 import 'sky_model.dart';
+import '../screens/screen.dart' show mcGuiScale;
 
 /// 游戏屏（join-and-render 3.1 骨架）。
 ///
@@ -52,6 +61,9 @@ class GameScreen extends StatefulWidget {
   @override
   State<GameScreen> createState() => _GameScreenState();
 }
+
+/// 最近输入来源（touch-input 能力；由指针设备类型驱动 hub 显隐）。
+enum InputSource { touch, keyboardMouse }
 
 class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   final Scene _scene = Scene();
@@ -98,6 +110,32 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   final FocusNode _focus = FocusNode();
   late final LocalPlayer _controller;
 
+  /// 位置上行（判据 `LocalPlayer.sendPosition:265-302` 的状态机）。
+  final PositionSync _positionSync = PositionSync();
+
+  // —— 游戏内屏幕与指针捕获（game-screens-touch-input）——
+
+  /// 指针捕获（`MouseHandler.java` 对应物；真捕获走 pointer_lock，
+  /// 降级平台由下方近似路径补）。
+  late final MouseHandler _mouseHandler;
+
+  /// 游戏内屏幕持有（`Gui.java` 对应物：单槽位 screen 状态）。
+  late final Gui _gui;
+
+  /// 窗口是否活跃（`isWindowActive()` 对应，grabMouse 门控用）。
+  bool _appActive = true;
+
+  /// 热键栏内容（最小实现：stateId 槽位，null = 空；完整 Inventory 类见债 §8）。
+  final List<int?> _hotbar = List<int?>.filled(9, null);
+
+  // —— 触控采集（touch-input 能力；自由设计，参考 fscraft game_page 口径）——
+
+  /// 最近输入来源（touch-input spec：hub 显隐由它驱动）。
+  /// **初始为 touch（hub 初始显示）**；检测到鼠标输入才隐藏——桌面插触屏 /
+  /// 移动端插鼠标都成立，MUST NOT 依赖平台静态判断。
+  InputSource _inputSource = InputSource.touch;
+
+
   late final PerspectiveCamera _camera;
 
   StreamSubscription<SessionEvent>? _events;
@@ -107,6 +145,22 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 诊断探针开关（`--dart-define=TRACE=true` 才生效）。
   static const bool _trace = bool.fromEnvironment('TRACE');
   double _traceAccum = 0;
+
+  // —— 冻结诊断（2026-10-07：无条件心跳 + 关键路径计数，复现时贴日志用）——
+
+  /// 心跳累计（每 1s 打一行 [BEAT]；心跳停 = Ticker 死，心跳在但不动 = 输入/门禁问题）。
+  double _beatAccum = 0;
+  int _beatTick = 0;
+
+  /// 门禁日志节流（初值 1 ⇒ 首次被挡立即打）。
+  double _gateLogAccum = 1.0;
+
+  /// 本秒收到的指针移动事件数（心跳里输出：冻结时区分"没事件"vs"事件没生效"）。
+  int _pointerMoves = 0;
+
+  /// 本秒网格化的段数 + 本秒上行包计数（会话侧回填通道，见 beat）。
+  int _meshedThisSecond = 0;
+  int _physicsStepsThisSecond = 0;
 
   /// 上行节流累计。原版每**刻**（20 Hz）上报一次移动，逐帧上报会把服务器的移动
   /// 校验打乱（实测服务器刷 moved too quickly）；这里按 20 Hz 发。
@@ -136,7 +190,42 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       player: _player,
       abilities: _abilities,
       onFlyingToggled: (flying) => widget.session.sendAbilities(flying: flying),
+      // 判据 `LocalPlayer.sendIsSprintingIfNeeded`（:304-309）：加速态变化即上行。
+      onSprintingChanged: (sprinting) =>
+          widget.session.sendSprinting(sprinting: sprinting),
     );
+    // —— Gui / MouseHandler 装配（判据链见各类文档）——
+    _mouseHandler = MouseHandler(
+      isWindowActive: () => _appActive,
+      onLookDelta: (dx, dy) => _input.lookDelta.add(vm.Vector2(dx, dy)),
+    );
+    _gui = Gui(
+      mouseHandler: _mouseHandler,
+      releaseAllKeys: _releaseAllKeys,
+      restoreToggleStatesOnScreenClosed: _restoreToggleStatesOnScreenClosed,
+      guiScaledSize: _guiScaledSize,
+      disconnectFromWorld: () => _exit('玩家断开连接'),
+      onChanged: () {
+        if (!mounted) return;
+        setState(() {}); // 屏幕切换 → 重渲染覆盖层
+        // 屏幕关闭 ⇒ 把主焦点交还游戏（否则覆盖层的 TextField 卸载后焦点
+        // 落回 scope 而非本节点 ⇒ 键盘事件无人接收 ⇒ "动不了"）。
+        if (_gui.screen() == null && !_focus.hasFocus) {
+          _focus.requestFocus();
+        }
+      },
+    );
+    _mouseHandler.gui = _gui;
+    // pointer_lock 被系统意外释放（Cmd+Tab 等）→ 等价失焦：清按键 + 复位捕获态
+    //（判据包文档 "Treat an unrequested CaptureState.released as a reason to
+    // pause"；原版 GLFW 失焦自动 releaseMouse，`MouseHandler.java:406/422`）。
+    PointerLock.instance.onStateChanged.listen((state) {
+      if (state == CaptureState.released) {
+        _mouseHandler.onCaptureLostExternally();
+        _releaseAllKeys();
+        if (_trace) debugPrint('[KEY] 捕获被系统释放 → 清按键');
+      }
+    });
     _camera = PerspectiveCamera(
       position: vm.Vector3(0, 0, 0),
       target: vm.Vector3(0, 0, 1),
@@ -144,6 +233,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       fovFar: 1024,
     );
     _boot();
+  }
+
+  /// GUI 缩放尺寸（`getWindow().getGuiScaledWidth/Height` 对应：
+  /// 窗口尺寸 ÷ 缩放档位，判据 `lib/screens/screen.dart` `mcGuiScale`）。
+  ({int width, int height}) _guiScaledSize() {
+    final size = MediaQuery.maybeSizeOf(context) ?? const Size(1280, 720);
+    final s = mcGuiScale(size);
+    return (width: (size.width / s).round(), height: (size.height / s).round());
   }
 
   /// 引擎静态资源（shader bundle）就绪后才能建几何与材质——早建出来的会静默不渲染。
@@ -241,21 +338,44 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _events?.cancel();
     _focus.dispose();
+    _mouseHandler.dispose();
     widget.session.close();
     super.dispose();
   }
 
   // —— 输入（Flutter 输入是本项目三处自由设计之一；键位照原版 KeyMapping） ——
 
-  /// 指针移动 → 视角增量，并实现原生指针捕获（虚拟光标锁）。
+  // —— 指针捕获（降级平台的近似；真捕获走 [_mouseHandler] 的 pointer_lock）——
+  //
+  // `MouseHandler.usesNativeLock == false` 的平台（Windows 上游未支持、
+  // ohos/Android 无指针）没有原生捕获可用，保留"越界断流"近似并登记翻译债
+  // （`openspec/progress.md` §10）。真捕获平台上以下近似路径全部旁路。
+
+  /// 降级近似下"忽略下一次移动"（原版 `ignoreFirstMove` 口径）。
+  bool _ignoreApproxMove = false;
+
+  /// 指针移动 → 视角增量。
+  ///
+  /// 触控指针：拖动即转视角（自由设计——触屏无指针捕获）；鼠标指针：真捕获
+  /// 平台在 [MouseHandler.pollMovement] 消费（此处旁路），降级平台走越界补偿。
   void _handlePointerMove(PointerMoveEvent event) {
-    if (_pointerCaptured) {
+    _pointerMoves++; // 心跳诊断：冻结时区分"没事件"vs"事件没生效"
+    final isTouch = event.kind == PointerDeviceKind.touch ||
+        event.kind == PointerDeviceKind.stylus;
+    if (isTouch) {
+      _noteSource(InputSource.touch);
+      _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
+      return;
+    }
+    _noteSource(InputSource.keyboardMouse); // 鼠标输入 → 隐藏 hub
+    if (_mouseHandler.usesNativeLock) return; // 真捕获：pollMovement 已消费
+    if (_mouseHandler.isMouseGrabbed()) {
       final size = context.size;
       final last = _lastPointerPos;
-      if (_ignoreNextMove) {
+      if (_ignoreApproxMove) {
         // 原版 `ignoreFirstMove`（`MouseHandler.java:415`）：抓指针/回中那一下
         // 不算视角转动。同时把参考点挪到当前位置，作为后续越界补偿的基准。
-        _ignoreNextMove = false;
+        _ignoreApproxMove = false;
         _lastPointerPos = event.position;
         if (_trace) debugPrint('[KEY] 忽略回中那一次移动（ignoreFirstMove）');
         return;
@@ -274,8 +394,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         }
       }
       _lastPointerPos = event.position;
+      _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
     }
-    _input.lookDelta.add(vm.Vector2(event.delta.dx, event.delta.dy));
   }
 
   /// 失焦即释放全部按键（判据 `KeyMapping.releaseAll()`，`KeyMapping.java:57`）。
@@ -288,20 +408,11 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// ⇒ **macOS 原版在抓鼠标时也不重置按键**，靠的是别的路径兜住这个缺口；
   /// 我们在这里显式清，两边最终状态一致（全部松开）。
   void _releaseAllKeys() {
-    // 失焦即解除指针捕获：原版 `grabMouse()` 要求 `isWindowActive()` 才抓，
-    // 且 GLFW 失焦时 `releaseMouse()` 会被调用（`MouseHandler.java:406/422`）。
-    if (_pointerCaptured) {
-      _pointerCaptured = false;
-      _ignoreNextMove = false;
-      _lastPointerPos = null;
-      if (_trace) debugPrint('[KEY] 失焦 → 解除指针捕获');
-    }
     if (!KeyMap.releaseAll(_pressed)) return; // 本来就没有按住键
     // 重算移动意图 ⇒ `Input` 全部回到"松开"，并同步一次上行，
-    // 否则服务器仍认为玩家在前进。
-    KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
-    _sprintPrevHeld = false;
-    _input.clearSprintWhenNotMoving();
+    // 否则服务器仍认为玩家在前进。加速态由状态机在下一刻自动停止
+    //（shouldStopRunSprinting：无前进冲动 ⇒ setSprinting(false) ⇒ 上行 STOP）。
+    KeyMap.apply(_pressed, _input);
     // 全松开地同步一次上行（服务器据此停止把玩家视为前进中）。
     widget.session.sendInputFlags(
       forward: false,
@@ -315,34 +426,48 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     if (_trace) debugPrint('[KEY] 失焦释放全部按键');
   }
 
+  /// 判据 `KeyMapping.restoreToggleStatesOnScreenClosed()`（`KeyMapping.java:63-69`）：
+  /// 屏幕关闭时恢复"切换式按键"的激活态。本仓加速已改按住式（无 ToggleKeyMapping）
+  /// ⇒ 无可恢复项；原版该回调同样只处理切换式按键。
+  void _restoreToggleStatesOnScreenClosed() {}
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // `resumed → inactive` 即 macOS 窗口失焦；其余非活跃态同理。
+    _appActive = state == AppLifecycleState.resumed;
     if (state != AppLifecycleState.resumed) {
       _releaseAllKeys();
     }
   }
 
   void _onKey(KeyEvent event) {
+    // 注意：屏幕打开时键盘已在 Focus.onKeyEvent 里路由给 screen（KeyDown/Repeat
+    // → keyPressed、KeyUp → keyReleased，判据 `KeyboardHandler.java:483-503`
+    // 分流），此处只会收到无屏时的游戏键位。
     if (KeyMap.update(_pressed, event)) {
-      KeyMap.apply(_pressed, _input, sprintPrevHeld: _sprintPrevHeld);
-      // 边沿 ⇒ 切换加速激活态（用户约定：Ctrl 按一次切换，见 Input 注释）。
-      if (_input.sprintPressed) {
-        _input.toggleSprint();
-        if (_trace) debugPrint('[SPRINT] toggle → active=${_input.sprint}');
-      }
-      _sprintPrevHeld = KeyMap.sprintHeld(_pressed);
-      // `Esc` 解除指针捕获（判据原版 `releaseMouse()`，`MouseHandler.java:422`）。
-      // macOS 上 Esc 仍是系统级键，Flutter 能收到 KeyDownEvent。
+      KeyMap.apply(_pressed, _input);
+      // `Esc` → pauseGame（判据 `KeyboardHandler.java:534-537`：
+      // handlesGlobalInput && event.isEscape() → minecraft.pauseGame()；
+      // 联机恒 PauseScreen(true)，setPauseScreen 只在无屏时生效）。
       if (event is KeyDownEvent &&
-          event.logicalKey == LogicalKeyboardKey.escape &&
-          _pointerCaptured) {
-        _pointerCaptured = false;
-        _ignoreNextMove = true;
-        // 解除时同样释放全部按键（原版 `releaseMouse` 不清键，但玩家在解绑态
-        // 按住任何键都不该继续生效，故一并清——避免"解绑后仍自动前进"）。
-        _releaseAllKeys();
-        if (_trace) debugPrint('[KEY] Esc → 解除指针捕获');
+          event.logicalKey == LogicalKeyboardKey.escape) {
+        _gui.pauseGame();
+        if (_trace) debugPrint('[KEY] Esc → pauseGame');
+      }
+      // `E` → 物品栏（判据 `Minecraft.java:1869+1983`：handleKeybinds 仅在
+      // 无屏时执行；keyInventory.consumeClick → setScreen(InventoryScreen)）。
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.keyE) {
+        _openInventory();
+      }
+      // 数字键 1-9 → 热键栏（判据 `Minecraft.java:1969-1976`：
+      // keyHotbarSlots[i].consumeClick() → inventory.setSelectedSlot(i)）。
+      if (event is KeyDownEvent) {
+        final digit = _digitIndex(event.logicalKey);
+        if (digit != null) {
+          _selectSlot(digit);
+          if (_trace) debugPrint('[HOTBAR] 数字键 → 槽位 $digit');
+        }
       }
       if (_trace && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
         debugPrint('[KEY] space down（onGround=${_input.jump}）');
@@ -350,31 +475,128 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// 上一帧 Ctrl 是否按着（加速切换的边沿比较基准）。
-  bool _sprintPrevHeld = false;
+  /// `Minecraft.handleKeybinds` 的 keyInventory 分支（判据 `:1983-1990`）。
+  ///
+  /// 差异（登记债）：原版生存模式打开生存 InventoryScreen、
+  /// `isServerControlledInventory` 走 sendOpenInventory——两者均未实现，故
+  /// 仅在 `mayfly`（创造能力）时打开创造物品栏，生存下 E 无操作。
+  void _openInventory() {
+    if (!_abilities.mayfly) {
+      if (_trace) debugPrint('[INV] mayfly=false → E 无操作（生存物品栏未实现，债）');
+      return;
+    }
+    _gui.setScreen(CreativeModeInventoryScreen(
+      textures: _blockTextures,
+      onPickItem: _onPickCreativeItem,
+    ));
+  }
 
-  // —— 指针捕获（原生近似；判据 `MouseHandler.grabMouse/`，`MouseHandler.java:404`）——
-  //
-  // 原版在 `grabMouse()` 里做三件事：指针移回窗口中心、置`ignoreFirstMove`
-  // （避免回中那一下产生视角跳变）、关闭屏幕 GUI。前两件由下面两个字段对应。
-  //
-  /// 本轮先做**原生近似**：指针移出窗口边界（`onPointerHover` 断流即视为离开）时，
-  // 把相对位移反向补偿回中心。实机跟手性不达标才引 `window_manager`（tasks 3.3 判定点）。
-  bool _pointerCaptured = false;
+  /// 创造点选：替换当前选中槽位 + 上行（判据
+  /// `MultiPlayerGameMode.java:491-495`：hasInfiniteMaterials 才发
+  /// `ServerboundSetCreativeModeSlotPacket(slot, stack)`——门控在会话侧）。
+  void _onPickCreativeItem(String blockName, int itemId, int stateId) {
+    final slot = _player.inventory.getSelectedSlot();
+    if (slot < 0 || slot >= _hotbar.length) return;
+    _hotbar[slot] = stateId; // 本地：替换当前拿的东西
+    widget.session.sendCreativeModeSlot(
+      slot: slot,
+      itemId: itemId,
+      count: 1,
+    );
+    // **必须 setState**：_hotbar 是普通 List，不改 UI 不会重建 ⇒ 热键栏图标
+    // 不出现（2026-10-07 实机：物品栏状态更新未完全修复的残留）。
+    if (mounted) setState(() {});
+    if (_trace) debugPrint('[INV] 点选 $blockName → 槽位 $slot（itemId=$itemId）');
+  }
 
-  /// 捕获态下需要**忽略**的下一次移动（判据 `ignoreFirstMove`，
-  /// `MouseHandler.java:415`）：指针被强制回中那一下不能算作视角转动。
-  bool _ignoreNextMove = false;
+  /// 切换选中槽位（判据 `Inventory.setSelectedSlot`）并**即时刷新 HUD**——
+  /// 数字键/滚轮/点选三条路都走这里，否则热键栏高亮不更新（2026-10-07 实机反馈）。
+  void _selectSlot(int slot) {
+    _player.inventory.setSelectedSlot(slot);
+    if (mounted) setState(() {});
+  }
+
+  /// 数字键 1-9 → 槽位 0-8（判据 `Minecraft.java:1969-1976` keyHotbarSlots）。
+  static int? _digitIndex(LogicalKeyboardKey key) {
+    const digits = [
+      LogicalKeyboardKey.digit1, LogicalKeyboardKey.digit2,
+      LogicalKeyboardKey.digit3, LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5, LogicalKeyboardKey.digit6,
+      LogicalKeyboardKey.digit7, LogicalKeyboardKey.digit8,
+      LogicalKeyboardKey.digit9,
+    ];
+    final i = digits.indexOf(key);
+    return i < 0 ? null : i;
+  }
+
+  /// 滚轮切槽（判据 `MouseHandler.onScroll:208-215` +
+  /// `ScrollWheelHandler.getNextScrollWheelSelection:31-42`：
+  /// step = signum(wheel)；current -= step；负数回绕 +9、超界回绕 -9。
+  /// Flutter 的 scrollDelta.dy 正 = 向下滚 = 原版 wheel 负）。
+  void _onScroll(double scrollDeltaDy) {
+    if (_gui.screen() != null) return; // :207 屏幕打开 → 归屏幕
+    final wheel = scrollDeltaDy > 0 ? -1.0 : 1.0; // 原版 yoffset 正 = 上滚
+    final step = wheel.sign.toInt();
+    var selected = _player.inventory.getSelectedSlot() - step; // :33
+    selected = selected < -1 ? -1 : selected; // :34
+    while (selected < 0) {
+      selected += 9; // :36-38（Inventory.getSelectionSize = 9）
+    }
+    while (selected >= 9) {
+      selected -= 9; // :39-41
+    }
+    _selectSlot(selected);
+    if (_trace) debugPrint('[HOTBAR] 滚轮 → 槽位 $selected');
+  }
+
+  /// 触控 Esc（瞬时语义）：无屏开暂停 / 有屏关屏
+  /// （判据 `KeyboardHandler.java:534` + `Screen.java:202` 同一条链）。
+  void _onVirtualEscape() {
+    final screen = _gui.screen();
+    if (screen != null) {
+      screen.onClose();
+    } else {
+      _gui.pauseGame();
+    }
+  }
+
+  /// 触控 E（瞬时语义）：无屏开物品栏 / 有屏关屏
+  /// （判据 `Minecraft.java:1983` + `AbstractContainerScreen.java:486-489`）。
+  void _onVirtualInventory() {
+    final screen = _gui.screen();
+    if (screen != null) {
+      screen.onClose();
+    } else {
+      _openInventory();
+    }
+  }
+
+  /// 触控按钮 → 键位等价按下/抬起（touch-input spec：与键盘同一条
+  /// KeyMapping 路径，MUST NOT 形成第二套输入状态）。
+  void _setVirtualKey(LogicalKeyboardKey key, bool down) {
+    final changed = down ? _pressed.add(key) : _pressed.remove(key);
+    if (!changed) return;
+    KeyMap.apply(_pressed, _input);
+  }
 
   /// 上一次已知的指针位置（窗口坐标，Flutter 的 [Offset]），用于检测越界。
   Offset? _lastPointerPos;
 
-  // —— 会话事件 → 场景 ——
+  /// 会话事件 → 场景。
   //
   // 事件来自 worker isolate，但 `SessionHandle.events` 是主 isolate 上的流
   // （isolate 边界由 mc_session 收口），所以这里可以直接改场景。
 
   void _onEvent(SessionEvent event) {
+    try {
+      _onEventInner(event);
+    } catch (e, st) {
+      // **不静默**：完整堆栈。区块事件处理抛异常不该杀掉会话订阅。
+      debugPrint('[EVENT] 事件处理异常（$event）：$e\n$st');
+    }
+  }
+
+  void _onEventInner(SessionEvent event) {
     switch (event) {
       case JoinedGame():
         // 进服成功；玩家位姿等随后的 PositionCorrection（原版登录后必发一次）。
@@ -421,9 +643,21 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         _player.pitch = xRot * math.pi / 180.0;
 
       case ChunkLoaded(:final chunk):
+        // 无条件留痕（诊断"加载的不是最近的区域"）：列坐标 + 离玩家距离。
+        debugPrint('[CHUNK] load (${chunk.x},${chunk.z}) '
+            'dist=${(chunk.x - _player.position.x / 16).abs().toStringAsFixed(1)},'
+            '${(chunk.z - _player.position.z / 16).abs().toStringAsFixed(1)} '
+            'cols=${_columns.length + 1}');
         _mountColumn(chunk);
 
       case ChunkUnloaded(:final x, :final z):
+        // 无条件留痕：卸载脚下列/眼前列是冻结头号嫌疑。
+        final standing = (x, z) ==
+            (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
+        debugPrint('[CHUNK] unload ($x,$z) '
+            'dist=${(x - _player.position.x / 16).abs().toStringAsFixed(1)},'
+            '${(z - _player.position.z / 16).abs().toStringAsFixed(1)} '
+            '${standing ? '⚠️ 卸载的是脚下列！' : ''}cols=${_columns.length - 1}');
         _unmountColumn(x, z);
 
       case SessionClosed(:final reason):
@@ -486,13 +720,38 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// 按帧预算消费脏队列（摊还网格化）。一次调用是同步的，不会与事件交错。
+  /// 按帧预算消费脏队列——**最近优先**：每帧从待网格化集合里挑离玩家最近
+  /// 的段（2026-10-07 实机：高速飞行时 FIFO 会让眼前的新段排在大量
+  /// 邻居重网格化之后，表现为"眼前的区域半天不出来、远处的先加载"）。
+  /// 一次调用是同步的，不会与事件交错。
   void _processDirty() {
     var budget = _meshBudgetPerFrame;
-    while (budget > 0 && _dirtyCursor < _dirtyQueue.length) {
-      final (x, y, z) = _dirtyQueue[_dirtyCursor++];
-      _dirtySet.remove((x, y, z));
-      _remeshSection(x, y, z);
+    while (budget > 0 && _dirtyQueue.isNotEmpty) {
+      final px = _player.position.x;
+      final pz = _player.position.z;
+      (int, int, int)? best;
+      var bestD = double.infinity;
+      var bestIdx = -1;
+      for (var i = _dirtyCursor; i < _dirtyQueue.length; i++) {
+        final (x, y, z) = _dirtyQueue[i];
+        // 段中心到玩家的水平距离²（粗排足够）。
+        final dx = x * 16 + 8 - px;
+        final dz = z * 16 + 8 - pz;
+        final d = dx * dx + dz * dz;
+        if (d < bestD) {
+          bestD = d;
+          best = _dirtyQueue[i];
+          bestIdx = i;
+        }
+      }
+      if (best == null) break;
+      // swap-remove：把选中项换到游标位，游标前移（避免 O(n) 删除）。
+      _dirtyQueue[bestIdx] = _dirtyQueue[_dirtyCursor];
+      _dirtyQueue[_dirtyCursor] = best;
+      _dirtyCursor++;
+      _dirtySet.remove(best);
+      _remeshSection(best.$1, best.$2, best.$3);
+      _meshedThisSecond++;
       budget--;
     }
     if (_dirtyCursor >= _dirtyQueue.length) {
@@ -504,6 +763,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   void _unmountColumn(int chunkX, int chunkZ) {
     _columns.remove((chunkX, chunkZ));
+    // 清掉该列自己的待网格化条目（列已卸载 ⇒ 条目只会空跑占预算；2026-10-07
+    // 实机：高速飞行时脏队列被过期条目塞满，眼前的段被饿死）。
+    final stale = _dirtyQueue
+        .where(((int, int, int) e) => e.$1 == chunkX && e.$3 == chunkZ)
+        .toList();
+    for (final e in stale) {
+      _dirtyQueue.remove(e);
+      _dirtySet.remove(e);
+    }
     final prefix = '$chunkX,';
     final suffix = ',$chunkZ';
     final doomed = _sectionNodes.keys
@@ -524,7 +792,19 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   }
 
   /// 重网格化一个段并替换它的场景节点（整段换节点，不做原地顶点更新）。
+  ///
+  /// 单段隔离：一段坏数据（异常 state/网格）抛异常曾打停 SceneView 的
+  /// Ticker（2026-10-07 实机：移动与视角冻结而 E/Esc 仍响应）——这里接住、
+  /// 完整打日志（含段坐标与堆栈）并跳过该段，根因仍要按日志修。
   void _remeshSection(int chunkX, int sectionY, int chunkZ) {
+    try {
+      _remeshSectionInner(chunkX, sectionY, chunkZ);
+    } catch (e, st) {
+      debugPrint('[MESH] 段 ($chunkX,$sectionY,$chunkZ) 网格化失败：$e\n$st');
+    }
+  }
+
+  void _remeshSectionInner(int chunkX, int sectionY, int chunkZ) {
     final column = _columns[(chunkX, chunkZ)];
     if (column == null || sectionY < 0 || sectionY >= column.sections.length) {
       return;
@@ -616,6 +896,55 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   // —— 逐帧 ——
 
   void _onTick(Duration elapsed, double dt) {
+    // **心跳放在 try 外**：inner 抛异常被接住后心跳仍要继续——复现冻结时看
+    // [BEAT] 是否还在打：停了 = Ticker 本身死了（渲染期异常，看 [UNCAUGHT]）；
+    // 还在打但不动 = 输入/门禁/物理路径问题，对照行内字段定位。
+    _beatTick++;
+    _beatAccum += dt;
+    if (_beatAccum >= 1.0) {
+      _beatAccum = 0;
+      _beat();
+    }
+    try {
+      _onTickInner(elapsed, dt);
+    } catch (e, st) {
+      // **不静默**：完整堆栈。SceneView 的 Ticker 回调直接调 onTick
+      //（flutter_scene scene_view.dart:581），回调抛异常会打停 Ticker ⇒
+      // 相机与移动同时冻结而 UI 仍活着（2026-10-07 实机复现）。
+      // 这里接住保活循环，把错误完整打出来定位根因。
+      debugPrint('[TICK] tick 异常（ticker 保活）：$e\n$st');
+    }
+  }
+
+  /// 每秒一行的心跳（无条件，不依赖 _trace）。
+  void _beat() {
+    final look = _input.lookDelta;
+    debugPrint('[BEAT] #$_beatTick '
+        'pos=(${_player.position.x.toStringAsFixed(1)},'
+        '${_player.position.y.toStringAsFixed(1)},'
+        '${_player.position.z.toStringAsFixed(1)}) '
+        'yaw=${_player.yaw.toStringAsFixed(2)} '
+        'lookAccum=(${look.x.toStringAsFixed(1)},${look.y.toStringAsFixed(1)}) '
+        'move=(${_input.move.x.toStringAsFixed(0)},${_input.move.y.toStringAsFixed(0)}) '
+        'jump=${_input.jump} sprint=${_input.sprint} '
+        'pressed=${_pressed.length} '
+        'grabbed=${_mouseHandler.isMouseGrabbed()} '
+        'nativeLock=${_mouseHandler.usesNativeLock} '
+        'ptrMoves=$_pointerMoves '
+        'cols=${_columns.length} '
+        'dirty=${_dirtyQueue.length - _dirtyCursor} '
+        'meshed=$_meshedThisSecond '
+        'phys=$_physicsStepsThisSecond');
+    _pointerMoves = 0;
+    _meshedThisSecond = 0;
+    _physicsStepsThisSecond = 0;
+  }
+
+  void _onTickInner(Duration elapsed, double dt) {
+    // 0) 相对位移消费（判据 turnPlayer 路径；真捕获平台取 pointer_lock 增量，
+    //    降级平台不动——近似路径在 onPointerMove 里直接加）。
+    _mouseHandler.pollMovement();
+
     // 0) 摊还网格化（每帧限额，避免地形涌入时卡住输入与渲染）。
     _processDirty();
 
@@ -627,17 +956,54 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     // 于是玩家永远不动、也不上行（实测：门禁加上它就再无任何上行）。
     final spawnColumn = (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
     if (!_columns.containsKey(spawnColumn)) {
-      // 门禁挡住时也要留痕：否则探针一行不打，会被误读成"应用没跑起来"。
-      if (_trace) {
-        _traceAccum += dt;
-        if (_traceAccum >= 1.0) {
-          _traceAccum = 0;
-          debugPrint('[TRACE-BLOCK] 脚下列 ${spawnColumn.$1},${spawnColumn.$2} 未加载；'
-              'pos=(${_player.position.x.toStringAsFixed(1)},'
-              '${_player.position.y.toStringAsFixed(1)},'
-              '${_player.position.z.toStringAsFixed(1)}) '
-              'cols=${_columns.length}');
-        }
+      // **视角不受门禁影响**：原版客户端在未加载区块照样转头（服务器权威校验
+      // 兜底）。门禁只挡物理（防坠入未加载世界）——把 lookDelta 留着不消费
+      // 会让"脚下列消失 ⇒ 移动+视角同时冻结"（2026-10-07 实机复现，根因
+      // 待下面的 [GATE] 日志定位）。
+      final look = _input.lookDelta;
+      if (look.x != 0 || look.y != 0) {
+        _player.applyLook(look);
+        look.setZero();
+      }
+      // **位置上行放在门禁之前**（判据 `LocalPlayer.tick:246` sendPosition）：
+      // 即使被门禁挡住（脚下列缺失），服务器也必须知道我们的真实位置——
+      // 它的区块流窗口跟着"相信位置"走，位置到了区块才会发过来（2026-10-07
+      // 实机：缺位置上行 ⇒ 服务器把区块持续发在旧位置周围 ⇒ 门禁永久卡死）。
+      _positionSync.tick(
+        player: _player,
+        yawDeg: 180.0 - _player.yaw * 180.0 / math.pi, // 原版 yRot 逆变换
+        pitchDeg: _player.pitch * 180.0 / math.pi,
+        horizontalCollision: _controller.horizontalCollision,
+        send: (variant, x, y, z, yRot, xRot, onGround, hCol) =>
+            widget.session.sendMovePlayer(
+          variant: variant.index,
+          x: x,
+          y: y,
+          z: z,
+          yRot: yRot,
+          xRot: xRot,
+          onGround: onGround,
+          horizontalCollision: hCol,
+        ),
+      );
+      // 门禁挡住时**每秒留痕**（无条件，不依赖 _trace）：脚下列坐标 + 已加载列
+      // 里离玩家最近的几个——用来区分"服务器真没发"vs"键不一致"。
+      _gateLogAccum += dt;
+      if (_gateLogAccum >= 1.0) {
+        _gateLogAccum = 0;
+        final nearest = _columns.keys
+            .map((k) => (k, (k.$1 - spawnColumn.$1).abs() + (k.$2 - spawnColumn.$2).abs()))
+            .toList()
+          ..sort((a, b) => a.$2.compareTo(b.$2));
+        final sample = nearest
+            .take(5)
+            .map((e) => '${e.$1}(${e.$2})')
+            .join(' ');
+        debugPrint('[GATE] 脚下列 $spawnColumn 未加载！cols=${_columns.length} '
+            'pos=(${_player.position.x.toStringAsFixed(1)},'
+            '${_player.position.y.toStringAsFixed(1)},'
+            '${_player.position.z.toStringAsFixed(1)}) '
+            '最近列: $sample');
       }
       _cameraSync();
       return;
@@ -653,11 +1019,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         ..jump = _autoWalkTime % 2.0 < 0.15; // 每 2 秒按一下空格
     }
 
-    // 0.8) 加速是切换式：松开移动键即取消激活（用户约定 2026-10-07）。
-    _input.clearSprintWhenNotMoving();
-
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
+    _physicsStepsThisSecond++;
+
+    // 1.2) 手持槽位 ensure 上行（判据 `MultiPlayerGameMode.tick:305-307` →
+    // `ensureHasSentCarriedItem:317-323`：变化才发 SetCarriedItem）。
+    widget.session.sendCarriedItem(
+        slot: _player.inventory.getSelectedSlot());
 
     // 1.5) 输入标志上行（isolate 内 lastSentInput 去重；player-input 切片）。
     widget.session.sendInputFlags(
@@ -767,7 +1136,16 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     if (!_ready) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return Scaffold(
+    // 拦截系统返回手势/返回键充当 Esc（判据 fscraft `game_page.dart:736-741`
+    // PopScope 口径；Java 语义同 KeyboardHandler Esc 链——无屏开暂停、有屏关屏）。
+    // 游戏内屏幕不走 Navigator 子路由 ⇒ 无滑动返回样式问题。
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _onVirtualEscape();
+      },
+      child: Scaffold(
       backgroundColor: const Color(0xFF87CEEB), // 3.3 接昼夜天空前的占位底色
       // **用 `Focus` 而不是 `KeyboardListener`**：后者在
       // `keyboard_listener.dart:77` 无条件 `return KeyEventResult.ignored`，
@@ -780,6 +1158,18 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         focusNode: _focus,
         autofocus: true,
         onKeyEvent: (node, event) {
+          // 屏幕打开 ⇒ 键归屏幕（KeyDown/Repeat → keyPressed、KeyUp →
+          // keyReleased）；屏幕不处理的键返回 **ignored**——覆盖层里的
+          // 搜索框等文本输入需要这些事件（返回 handled 会吞掉输入）。
+          final screen = _gui.screen();
+          if (screen != null) {
+            final handled = event is KeyUpEvent
+                ? screen.keyReleased(event)
+                : screen.keyPressed(event);
+            return handled
+                ? KeyEventResult.handled
+                : KeyEventResult.ignored;
+          }
           _onKey(event);
           // 让 macOS 的 Esc 仍能退出全屏：系统级组合键交回平台。
           final sysCombo = HardwareKeyboard.instance.isControlPressed ||
@@ -789,103 +1179,151 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           }
           return KeyEventResult.handled;
         },
-        child: Listener(
-        onPointerMove: (event) {
-          // 全屏指针→视角（fscraft 口径）。
-          _handlePointerMove(event);
-        },
-        // 指针离开窗口边界时 `onPointerMove` 会断流；据此判定"越界"并把位移
-        // 反向补偿回中心，实现零依赖的指针捕获（判据 `MouseHandler.grabMouse()`，
-        // `MouseHandler.java:404`）。实机跟手性不达标才引window_manager（tasks 3.3）。
-        // 指针捕获：判据`MouseHandler.grabMouse()`（`MouseHandler.java:404`）。
-        //
-        // **原生近似的实现原理**：`Listener` 没有 `onPointerExit`，所以用
-        // `onPointerMove` 的**停滞**判据——指针越过窗口边界时 Flutter 停止投递
-        // 移动事件（`_lastPointerPos` 停在边界上），而 `onPointerHover` 在指针
-        // 重新进入时才恢复。两者结合即可判定"越界 ⇒ 回中 ⇒ 忽略该次移动"
-        //（对应原版 `ignoreFirstMove`）。
-        onPointerHover: (event) {
-          if (!_pointerCaptured) return;
-          final size = context.size;
-          if (size == null || size.width <= 0 || size.height <= 0) return;
-          final pos = event.position;
-          final center = Offset(size.width / 2, size.height / 2);
-          // 越界深度（>0 说明指针在边界外侧）。
-          final overshoot = Offset((pos.dx - center.dx).abs(), (pos.dy - center.dy).abs());
-          final atEdge =
-              overshoot.dx >= size.width / 2 || overshoot.dy >= size.height / 2;
-          if (!atEdge) {
-            _lastPointerPos = pos;
-            return;
-          }
-          // 指针重新进入 ⇒ 回中并忽略这一次移动（原版 `ignoreFirstMove`）。
-          _lastPointerPos = center;
-          _ignoreNextMove = true;
-          if (_trace) {
-            debugPrint('[KEY] 指针回中(${overshoot.dx.toStringAsFixed(0)},'
-                '${overshoot.dy.toStringAsFixed(0)}) → 忽略该次移动');
-          }
-        },
-        // 点击游戏区即把键盘焦点取回（`_focus` 只有 autofocus，失焦后点了空白区
-        // 不会还焦点 ⇒ 键盘一直"失效"）。行为 translucent，不挡子控件的点击。
-        child: Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerDown: (_) {
-            if (!_focus.hasFocus) {
-              _focus.requestFocus();
-              if (_trace) debugPrint('[KEY] 点击游戏区 → 抢回焦点');
-            }
-            // 首次点击即进入指针捕获（判据 `MouseHandler.grabMouse()`：
-            // 原版在关屏 GUI 后抓鼠标）。`grabMouse` 还要求窗口活跃才抓，
-            // Flutter 侧对应"点击必然活跃"。
-            if (!_pointerCaptured) {
-              _pointerCaptured = true;
-              // 原版 `ignoreFirstMove`：抓指针那一下不产生视角转动。
-              _ignoreNextMove = true;
-              final size = context.size;
-              _lastPointerPos = size == null
-                  ? null
-                  : Offset(size.width / 2, size.height / 2);
-              if (_trace) debugPrint('[KEY] 进入指针捕获');
-            }
-          },
-          child: Stack(
+        child: Stack(
           children: [
-            SceneView(_scene, camera: _camera, onTick: _onTick),
-            // driver 调试后门（debug 构建）：无键盘注入手段时驱动跳跃/移动，
-            // 验证物理链路；入口不进发行形态之外的场景。
-            if (kDebugMode)
-              Positioned(
-                right: 12,
-                bottom: 12,
-                child: Column(
+            // —— ① 场景层：指针位移 → 视角 ——
+            Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerMove: _handlePointerMove,
+              onPointerSignal: (signal) {
+                // 滚轮切槽（判据 `MouseHandler.onScroll`，fscraft 同款接线）。
+                if (signal is PointerScrollEvent) {
+                  _onScroll(signal.scrollDelta.dy);
+                }
+              },
+              // 降级近似：指针越界断流判定（真捕获平台旁路）。
+              onPointerHover: (event) {
+                _noteSource(InputSource.keyboardMouse); // 鼠标输入 → 隐藏 hub
+                if (_mouseHandler.usesNativeLock) return;
+                if (!_mouseHandler.isMouseGrabbed()) return;
+                final size = context.size;
+                if (size == null || size.width <= 0 || size.height <= 0) return;
+                final pos = event.position;
+                final center = Offset(size.width / 2, size.height / 2);
+                // 越界深度（>0 说明指针在边界外侧）。
+                final overshoot = Offset(
+                    (pos.dx - center.dx).abs(), (pos.dy - center.dy).abs());
+                final atEdge = overshoot.dx >= size.width / 2 ||
+                    overshoot.dy >= size.height / 2;
+                if (!atEdge) {
+                  _lastPointerPos = pos;
+                  return;
+                }
+                // 指针重新进入 ⇒ 回中并忽略这一次移动（原版 `ignoreFirstMove`）。
+                _lastPointerPos = center;
+                _ignoreApproxMove = true;
+                if (_trace) {
+                  debugPrint('[KEY] 指针回中(${overshoot.dx.toStringAsFixed(0)},'
+                      '${overshoot.dy.toStringAsFixed(0)}) → 忽略该次移动');
+                }
+              },
+              // 点击游戏区：抢回焦点 + 重新捕获（判据 `MouseHandler.java:80-88`：
+              // 无屏且未捕获时按下即 grabMouse；屏幕打开时归屏幕处理）。
+              onPointerDown: (event) {
+                _notePointerSource(event);
+                if (!_focus.hasFocus) {
+                  _focus.requestFocus();
+                  if (_trace) debugPrint('[KEY] 点击游戏区 → 抢回焦点');
+                }
+                final grabbed = _mouseHandler.onButton(true);
+                if (grabbed) {
+                  // 近似路径的回中基准（真捕获路径无需）。
+                  _ignoreApproxMove = true;
+                  final size = context.size;
+                  _lastPointerPos = size == null
+                      ? null
+                      : Offset(size.width / 2, size.height / 2);
+                }
+              },
+              onPointerUp: (event) => _mouseHandler.onButton(false),
+              child: SceneView(_scene, camera: _camera, onTick: _onTick),
+            ),
+
+            // —— ②b 热键栏 HUD（判据 `Hud` 底部居中 hotbar；数字键/滚轮/
+            //    点选的判据见 _onKey/_onScroll；屏幕打开时被覆盖层遮住）——
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 8,
+              child: IgnorePointer(
+                ignoring: _gui.screen() != null,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    for (final (label, set_) in [
-                      ('跳', () => _input.jump = true),
-                      ('前', () => _input.move.y = 1),
-                      ('后', () => _input.move.y = -1),
-                      ('左', () => _input.move.x = -1),
-                      ('右', () => _input.move.x = 1),
-                    ])
-                      Padding(
-                        padding: const EdgeInsets.all(2),
-                        child: ElevatedButton(
-                          onPressed: () {
-                            set_();
-                            // 下一帧 endFrame 会清 move；jump 由 onGround 门控自然复位。
-                          },
-                          child: Text(label),
-                        ),
-                      ),
+                    // 槽位 = 组件宽度 1/14（钳制 28..56），随窗口自适应。
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final slot =
+                            (constraints.maxWidth / 14).clamp(28.0, 56.0);
+                        return MCHotbar(
+                          icons: [
+                            for (final stateId in _hotbar)
+                              stateId == null
+                                  ? null
+                                  : BlockIcon(
+                                      stateId: stateId,
+                                      textures: _blockTextures,
+                                      size: slot * 0.8,
+                                    ),
+                          ],
+                          selectedIndex: _player.inventory.getSelectedSlot(),
+                          onSelect: _selectSlot,
+                          slotSize: slot,
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
+            ),
+
+            // —— ③ 十字准星（判据 `Hud.java:447` 居中 + `RenderPipelines.java:798`
+            //    BlendFunction.INVERT 反色混合；屏幕打开时隐藏，同原版 HUD 门控）——
+            if (_gui.screen() == null) const Crosshair(),
+
+            // —— ③b 触控 hub（**置于暂停菜单覆盖层之下**，用户约定 2026-10-07；
+            //    关闭菜单用键盘 Esc 或菜单内「回到游戏」按钮）——
+            if (_inputSource == InputSource.touch)
+              TouchHub(
+                bindings: TouchHubBindings(
+                  onForward: (d) => _setVirtualKey(LogicalKeyboardKey.keyW, d),
+                  onBack: (d) => _setVirtualKey(LogicalKeyboardKey.keyS, d),
+                  onLeft: (d) => _setVirtualKey(LogicalKeyboardKey.keyA, d),
+                  onRight: (d) => _setVirtualKey(LogicalKeyboardKey.keyD, d),
+                  onJump: (d) => _setVirtualKey(LogicalKeyboardKey.space, d),
+                  onSneak: (d) =>
+                      _setVirtualKey(LogicalKeyboardKey.shiftLeft, d),
+                  onEscape: _onVirtualEscape,
+                  onInventory: _onVirtualInventory,
+                ),
+              ),
+
+            if (_gui.screen() != null)
+              Positioned.fill(
+                child: _gui.screen()!.buildWidget(context),
+              ),
+
           ],
         ),
       ),
       ),
-      ),
     );
+  }
+
+  /// 最近输入来源检测（touch-input spec：`PointerDeviceKind.touch/stylus` →
+  /// touch，判据 fscraft `game_page.dart:441-446` 口径；MUST NOT 依赖平台静态
+  /// 判断——同一桌面平台可外接触屏）。
+  void _noteSource(InputSource source) {
+    if (source != _inputSource && mounted) {
+      setState(() => _inputSource = source);
+    }
+  }
+
+  void _notePointerSource(PointerDownEvent event) {
+    final isTouch = event.kind == PointerDeviceKind.touch ||
+        event.kind == PointerDeviceKind.stylus;
+    _noteSource(
+        isTouch ? InputSource.touch : InputSource.keyboardMouse);
   }
 }
 

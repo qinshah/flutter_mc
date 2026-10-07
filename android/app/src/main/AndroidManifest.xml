@@ -1,4 +1,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- ── 网络 ────────────────────────────────────────────────────────────
+         联机只连用户指定的 MC 服务器（项目网络红线）。Flutter 的
+         debug/profile 变体清单里已有 INTERNET，main 里补一份，让 release
+         也能联网。ACCESS_NETWORK_STATE 用于读网络可达性做连接前置检查。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- ── 存储：任意路径读写 ──────────────────────────────────────────────
+         READ/WRITE_EXTERNAL_STORAGE 自 Android 10（API 29）起废弃，Android 13
+         （API 33）起彻底失效，故用 maxSdkVersion=32 限定只在旧系统生效。
+         Android 11（API 30）起要读写**任意路径**（不是文件选择器挑中的那个），
+         只能靠 MANAGE_EXTERNAL_STORAGE（"所有文件的访问权限"）：
+           · 它是高危权限，运行时权限弹窗不会自动授予，
+             必须由用户到设置页手动打开 → 用
+             Permission.manageExternalStorage.request() 跳转系统设置页；
+           · 上架 Google Play 需额外提交使用声明，本应用为本地开发用途。
+         插件自身清单是空的（permission_handler_android 未声明任何权限），
+         所以这些必须写在本应用的清单里。 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
     <application
         android:label="flutter_mc"
         android:name="${applicationName}"

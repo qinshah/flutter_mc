@@ -55,6 +55,36 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<!-- ── 网络 ────────────────────────────────────────────────────────────
+	     iOS 上 TCP 直连不需要任何权限声明（不像 Android 要 INTERNET）。
+	     唯一需要声明的是**本地网络**：iOS 14+ 访问局域网地址（家里/机房里
+	     那台 MC 服务器就是）会弹"允许访问本地网络"授权框，缺
+	     NSLocalNetworkUsageDescription 则访问直接被拒。
+	     NSBonjourServices 是 Flutter 调试用的 _dartobservatory._tcp 与
+	     本地网络权限配套声明（官方 Flutter 模板同款）。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>需要访问本地网络，用于连接局域网内的 Minecraft 服务器。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartobservatory._tcp</string>
+	</array>
+
+	<!-- ── 文件 ────────────────────────────────────────────────────────────
+	     iOS 没有"任意路径读写"这回事，这是系统级限制，不是漏配了什么：
+	     · 应用只能读写自己的沙盒（NSDocumentDirectory / Caches / tmp）；
+	     · 沙盒外的路径只有两条路：UIDocumentPicker（用户在文件 App 里选，
+	       拿到的还是 security-scoped bookmark，不是任意路径）或
+	       应用组共享容器（App Group，同样限定目录）。
+	     permission_handler 在 iOS 上也没有文件系统权限组 —— 它的
+	     Permission.storage 指的是相册。所以下面只做能做的两件事：
+	     UIFileSharingEnabled 让 App 的 Documents 出现在 文件 App / iTunes
+	     里（可从电脑往里拖存档），LSSupportsOpeningDocumentsInPlace 保证
+	     就地打开、不复制一份到别处。 -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

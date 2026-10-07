@@ -30,5 +30,19 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- TCC 受保护目录的访问说明文案。关掉沙箱只解决了"能不能走到那里"，
+	     但 macOS 10.15+ 的 TCC 仍单独看管桌面/文稿/下载/网络宗卷/可移动宗卷，
+	     首次触碰时会弹系统授权框；缺这些 key 时系统直接拒绝访问（连弹窗都不给）。
+	     文案就是弹窗上显示的那一句。 -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>需要读写桌面上的文件，用于选取与保存 Minecraft 存档和资源包。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>需要读写文稿目录中的文件，用于选取与保存 Minecraft 存档和资源包。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>需要读写下载目录中的文件，用于选取 Minecraft 资源包与客户端文件。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>需要读写网络宗卷上的文件，用于加载存放在网络位置的存档。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>需要读写外接磁盘上的文件，用于加载存放在移动存储中的存档。</string>
 </dict>
 </plist>

@@ -3,12 +3,15 @@ PODS:
   - path_provider_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
+  - pointer_lock (0.0.1):
+    - FlutterMacOS
   - refresh_rate (2.0.1):
     - FlutterMacOS
 
 DEPENDENCIES:
   - FlutterMacOS (from `Flutter/ephemeral`)
   - path_provider_foundation (from `Flutter/ephemeral/.symlinks/plugins/path_provider_foundation/darwin`)
+  - pointer_lock (from `Flutter/ephemeral/.symlinks/plugins/pointer_lock/macos`)
   - refresh_rate (from `Flutter/ephemeral/.symlinks/plugins/refresh_rate/macos`)
 
 EXTERNAL SOURCES:
@@ -16,12 +19,15 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral
   path_provider_foundation:
     :path: Flutter/ephemeral/.symlinks/plugins/path_provider_foundation/darwin
+  pointer_lock:
+    :path: Flutter/ephemeral/.symlinks/plugins/pointer_lock/macos
   refresh_rate:
     :path: Flutter/ephemeral/.symlinks/plugins/refresh_rate/macos
 
 SPEC CHECKSUMS:
   FlutterMacOS: c232990155153907050900a2e175c7773903ba4e
   path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
+  pointer_lock: 0dc4b446e641229335ed091c7366d7121adfbdc5
   refresh_rate: c4b872c1529041331309df8e4fdd8ee54fbaa69a
 
 PODFILE CHECKSUM: 1e95c36afbfd1cb6423ceca4de7a8e1b256fb6ac
