@@ -54,9 +54,12 @@ abstract final class PlayServerbound {
   static const int movePlayerStatusOnly = 33;
   static const int playerAbilities = 40; // 注册序标定（GameProtocols.java:101，同法）
   static const int playerAction = 41;
+  static const int playerCommand = 42; // 注册序标定（GameProtocols.java:103，同法）
   static const int playerInput = 43; // 注册序标定（GameProtocols.java:104，同法）
   static const int playerLoaded = 44;
   static const int pong = 45;
+  static const int setCarriedItem = 53; // 注册序标定（GameProtocols.java:114，同法）
+  static const int setCreativeModeSlot = 56; // 注册序标定（GameProtocols.java:117，同法）
   static const int swing = 63;
   static const int useItemOn = 66;
 }

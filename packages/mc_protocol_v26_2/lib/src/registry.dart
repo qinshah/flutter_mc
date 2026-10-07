@@ -679,6 +679,51 @@ class _PlayerAbilitiesOutCodec extends PacketCodecBase<PlayerAbilitiesOut> {
   }
 }
 
+/// 判据：`ServerboundSetCarriedItemPacket.java`（单字段 short slot）。
+class _SetCarriedItemCodec extends PacketCodecBase<SetCarriedItem> {
+  @override
+  SetCarriedItem decodeBody(ByteReader r) => throw UnsupportedError('客户端只写不读');
+
+  @override
+  void encodeBody(ByteWriter w, SetCarriedItem p) {
+    w.writeShort(p.slot);
+  }
+}
+
+/// 判据：`ServerboundSetCreativeModeSlotPacket.java`（short slotNum + ItemStack
+/// OPTIONAL_UNTRUSTED）+ `ItemStack.java:185-193`（count → item holder → patch）+
+/// `DataComponentPatch.java:100-103`（空补丁 = 两个 VarInt 0）。
+/// 判据：`ServerboundPlayerCommandPacket.java:33-37`（varint + enum + varint）；
+/// enum 序数 = 原版 `Action` 声明顺序（`:60-68`）。
+class _PlayerCommandCodec extends PacketCodecBase<PlayerCommand> {
+  @override
+  PlayerCommand decodeBody(ByteReader r) => throw UnsupportedError('客户端只写不读');
+
+  @override
+  void encodeBody(ByteWriter w, PlayerCommand p) {
+    w.writeVarInt(p.entityId);
+    w.writeVarInt(p.action);
+    w.writeVarInt(p.data);
+  }
+}
+
+class _SetCreativeModeSlotCodec extends PacketCodecBase<SetCreativeModeSlot> {
+  @override
+  SetCreativeModeSlot decodeBody(ByteReader r) =>
+      throw UnsupportedError('客户端只写不读');
+
+  @override
+  void encodeBody(ByteWriter w, SetCreativeModeSlot p) {
+    w.writeShort(p.slotNum);
+    w.writeVarInt(p.count); // ItemStack.createOptionalStreamCodec：先 count
+    if (p.count > 0) {
+      w.writeVarInt(p.itemId); // Item.holderRegistry（注册序 id）
+      w.writeVarInt(0); // DataComponentPatch：positiveCount = 0
+      w.writeVarInt(0); // DataComponentPatch：negativeCount = 0
+    }
+  }
+}
+
 class _PlayerActionCodec extends PacketCodecBase<PlayerAction> {
   @override
   PlayerAction decodeBody(ByteReader r) => throw UnsupportedError('客户端只写不读');
@@ -884,6 +929,12 @@ PacketRegistry buildRegistry26_2() {
   outb(ProtocolPhase.play, ids.PlayServerbound.swing, Swing, _SwingCodec());
   outb(ProtocolPhase.play, ids.PlayServerbound.acceptTeleportation, AcceptTeleportation,
       _AcceptTeleportationCodec());
+  outb(ProtocolPhase.play, ids.PlayServerbound.setCreativeModeSlot, SetCreativeModeSlot,
+      _SetCreativeModeSlotCodec());
+  outb(ProtocolPhase.play, ids.PlayServerbound.playerCommand, PlayerCommand,
+      _PlayerCommandCodec());
+  outb(ProtocolPhase.play, ids.PlayServerbound.setCarriedItem, SetCarriedItem,
+      _SetCarriedItemCodec());
 
   return reg;
 }

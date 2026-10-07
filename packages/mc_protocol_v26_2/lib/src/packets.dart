@@ -727,3 +727,48 @@ final class PlayerAbilitiesOut {
   PlayerAbilitiesOut({required this.flying});
   final bool flying;
 }
+
+/// REF: `ServerboundSetCarriedItemPacket.java`（单字段 `slot: short`，
+/// `write` = writeShort，`:25-27`）。
+final class SetCarriedItem {
+  SetCarriedItem({required this.slot});
+  final int slot;
+}
+
+/// REF: `ServerboundSetCreativeModeSlotPacket.java`（record `slotNum: short` +
+/// `itemStack: ItemStack`，经 `validatedStreamCodec(OPTIONAL_UNTRUSTED_STREAM_CODEC)`）。///
+/// ItemStack 线上格式（判据 `ItemStack.java:170-195` `createOptionalStreamCodec`）：
+/// VarInt count（≤0 即空栈）→ Item holder（VarInt 注册序 id，`Item.java:104`
+/// `holderRegistry(Registries.ITEM)`）→ DataComponentPatch。本仓创造点选只发
+/// **无补丁的普通物品**：patch 走 `DataComponentPatch.java:100-103` 空补丁 =
+/// 两个 VarInt 0（DELIMITED 与普通 STREAM_CODEC 对空补丁编码相同）。
+/// 完整组件补丁编解码未实现（债，见 openspec/progress.md §8）。
+/// REF: `ServerboundPlayerCommandPacket.java`（varint entityId + enum action +
+/// varint data，`:33-37` write）。Action 序数照原版枚举顺序（`:60-68`）：
+/// STOP_SLEEPING=0、**START_SPRINTING=1、STOP_SPRINTING=2**、
+/// START_RIDING_JUMP=3、STOP_RIDING_JUMP=4、OPEN_INVENTORY=5、START_FALL_FLYING=6。
+final class PlayerCommand {
+  PlayerCommand({required this.entityId, required this.action, this.data = 0});
+  final int entityId;
+  final int action;
+
+  /// 原版仅骑乘跳跃用（`data`），其余恒 0。
+  final int data;
+}
+
+final class SetCreativeModeSlot {
+  SetCreativeModeSlot({
+    required this.slotNum,
+    required this.itemId,
+    required this.count,
+  });
+
+  /// 目标槽位（原版 `short slotNum`；-1 = 丢弃）。
+  final int slotNum;
+
+  /// 物品注册序 id（`Item.java:104` holderRegistry 序）。
+  final int itemId;
+
+  /// 栈数量（`ItemStack.getCount()`）。
+  final int count;
+}
