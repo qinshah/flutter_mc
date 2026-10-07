@@ -3,7 +3,7 @@ PODS:
   - path_provider_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
-  - refresh_rate (1.0.2):
+  - refresh_rate (2.0.1):
     - FlutterMacOS
 
 DEPENDENCIES:
@@ -22,7 +22,7 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   FlutterMacOS: c232990155153907050900a2e175c7773903ba4e
   path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
-  refresh_rate: c707071c7dba6c0bd087d136b9d7ed6182ede22a
+  refresh_rate: c4b872c1529041331309df8e4fdd8ee54fbaa69a
 
 PODFILE CHECKSUM: 1e95c36afbfd1cb6423ceca4de7a8e1b256fb6ac
 

@@ -148,10 +148,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_scene
-      sha256: f7d3e3648509dd0dcf2a2f131ae4a68ccbcc97987daff6ca2283a3826b7abc8e
+      sha256: "1b89f4037ecba061a683d37f93ee42dcf32a6438e473b3086694de970ea52eb2"
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "0.24.0"
+    version: "0.24.1"
   flutter_test:
     dependency: "direct dev"
     description: flutter
@@ -446,10 +446,10 @@ packages:
     dependency: "direct main"
     description:
       name: refresh_rate
-      sha256: b20deeaff0febb447378ecd98e441a1768412603cbdf032b11aa24e2f5a25966
+      sha256: e9155192731485f2448645eedd9bdf69dd7fbad76b85efdc4bdd4585ee97f1f1
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "1.0.2"
+    version: "2.0.1"
   scene:
     dependency: transitive
     description:
@@ -531,10 +531,10 @@ packages:
     dependency: "direct main"
     description:
       name: vector_math
-      sha256: f36f9f3be64c6198714492bb455c11056e33e2f85d9a0b676a48301e44fdcf47
+      sha256: "92b9910f66ed1057fd4da7b040ae7c74cafacf885bdc81be496928d5049b032d"
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "2.4.2"
+    version: "2.4.3"
   vm_service:
     dependency: transitive
     description:

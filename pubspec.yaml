@@ -9,9 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_scene: 0.24.0
+  flutter_scene: ^0.24.1
   # 3D 数学库（向量、四元数、矩阵、Ray 等），flutter_scene 反复使用。
-  vector_math: 2.4.2
+  vector_math: ^2.4.3
   # 应用文档目录（存档与缓存目录定位）。开始适配鸿蒙
   path_provider:
     git:
@@ -19,7 +19,7 @@ dependencies:
       path: packages/path_provider/path_provider
       ref: br_path_provider-v2.1.5_ohos_dev
   # 解除系统刷新率上限。开发期用于观察帧率。
-  refresh_rate: 1.0.2
+  refresh_rate: ^2.0.1
   # MC 协议层四包（自 fscraft packages 原样搬入）。
   mc_nbt:
     path: packages/mc_nbt
