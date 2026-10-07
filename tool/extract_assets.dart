@@ -209,6 +209,12 @@ const _foliageTintPrefixes = <String>[
 ];
 const _grassTintPrefixes = <String>[
   'block/grass_block_top', // 判据：grassBlock()（grass_block.json 的 top）
+  // `grass_block.json` 的**第二个元素**用 `#overlay` =
+  // `grass_block_side_overlay`（实测纯灰 `(154,154,154)`），且四个侧面都带
+  // `"tintindex": 0`。判据 `CuboidFace.java:33/41`（tintindex 解析）与
+  // `BakedQuad.MaterialInfo`（`:58`）把tintIndex 传给渲染层 ⇒ 按 biome
+  // colormap 着色。不着色 ⇒ 草方块四侧浮出一层**纯灰**（读起来偏青蓝）。
+  'block/grass_block_side_overlay',
   'block/short_grass', 'block/fern',
   'block/large_fern', 'block/tall_grass', 'block/bush',
   // 判据 `BlockColors.java:25`：
