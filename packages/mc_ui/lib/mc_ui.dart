@@ -6,9 +6,14 @@
 /// 本包是 packages/ 下唯一允许依赖 Flutter 的包，禁依赖 flutter_scene。
 library;
 
+export 'src/crosshair.dart';
 export 'src/mc_button.dart';
 export 'src/mc_cycle_button.dart';
 export 'src/mc_edit_box.dart';
+export 'src/mc_item_slot.dart';
 export 'src/mc_face_painter.dart';
 export 'src/mc_icon_button.dart';
 export 'src/mc_slider_button.dart';
+export 'src/mc_sprite_icon_button.dart';
+export 'src/touch_hub.dart';
+export 'src/touch_key_button.dart';

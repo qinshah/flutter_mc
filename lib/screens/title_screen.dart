@@ -14,7 +14,8 @@ class TitleScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     final gap = SizedBox(height: 4 * s);
     return McScreen(
       body: (context) => Stack(
@@ -156,5 +157,6 @@ class TitleScreen extends StatelessWidget {
         ],
       ),
     );
+      });
   }
 }

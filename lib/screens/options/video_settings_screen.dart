@@ -24,7 +24,8 @@ class _VideoSettingsScreenState extends State<VideoSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     final gap = SizedBox(width: 8 * s);
     return McScreen(
       title: '视频设置',
@@ -177,6 +178,7 @@ class _VideoSettingsScreenState extends State<VideoSettingsScreen> {
         ],
       ),
     );
+      });
   }
 
   Widget _section(String text, double s) => Align(

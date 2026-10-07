@@ -12,7 +12,8 @@ class ConfirmScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     return McScreen(
       body: (context) => Column(
         children: [
@@ -53,6 +54,7 @@ class ConfirmScreen extends StatelessWidget {
         ],
       ),
     );
+      });
   }
 }
 

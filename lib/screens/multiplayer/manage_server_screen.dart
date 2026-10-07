@@ -30,7 +30,8 @@ class _ManageServerScreenState extends State<ManageServerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     final editing = widget.args.editIndex != null;
     return McScreen(
       title: editing ? '编辑服务器信息' : '添加服务器',
@@ -88,6 +89,7 @@ class _ManageServerScreenState extends State<ManageServerScreen> {
         ],
       ),
     );
+      });
   }
 
   Widget _field(String label, TextEditingController controller, double s) {

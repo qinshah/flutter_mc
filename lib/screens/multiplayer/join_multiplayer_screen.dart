@@ -98,7 +98,8 @@ class _JoinMultiplayerScreenState extends State<JoinMultiplayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     final gap = SizedBox(width: 4 * s);
     final hasSelection = _list != null && _selected >= 0 && _selected < _list!.length;
 
@@ -204,6 +205,7 @@ class _JoinMultiplayerScreenState extends State<JoinMultiplayerScreen> {
         ],
       ),
     );
+      });
   }
 
   Future<void> _joinSelected() async {

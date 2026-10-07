@@ -35,7 +35,8 @@ class _DirectJoinServerScreenState extends State<DirectJoinServerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final s = mcGuiScale(MediaQuery.sizeOf(context)).toDouble();
+    return LayoutBuilder(builder: (context, constraints) {
+      final s = mcScaleForWidth(constraints.maxWidth);
     return McScreen(
       title: '直接连接',
       body: (context) => Column(
@@ -85,5 +86,6 @@ class _DirectJoinServerScreenState extends State<DirectJoinServerScreen> {
         ],
       ),
     );
+      });
   }
 }
