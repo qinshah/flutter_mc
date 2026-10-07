@@ -27,7 +27,7 @@ class PlayerMotion {
   /// `add(Attributes.MOVEMENT_SPEED, 0.1F)`）。
   ///
   /// **这不是格/秒**——原版速度有两套量纲，别混：
-  /// - **属性值** 0.1：喂给 `getFlyingSpeed()`（空中飞行）⇒ ×0.1 = 0.01 格/刻
+  /// - **属性值** 0.1：喂给地面行走分支（`getFrictionInfluencedSpeed` 地面分支）
   /// - **格/秒** 4.317：`getFrictionInfluencedSpeed` 地面分支乘 `0.216/friction³`
   ///   后得到格/刻，再 ×20 才是格/秒。
   static const double moveSpeedAttribute = 0.1;
@@ -39,7 +39,7 @@ class PlayerMotion {
   /// - 竖直：`abilities.getFlyingSpeed() × 3`（客户端本地预测，`LocalPlayer.java:833-845`，
   ///   在 `super.aiStep()` **之前**独立执行，**不经过** `getInputVector`）
   /// - 水平：`getFrictionInfluencedSpeed` → 空中返回 `getFlyingSpeed()`
-  ///   = `getSpeed() × 0.1`（`LivingEntity.java:2707`）
+  ///   = `abilities.flyingSpeed`（疾跑 ×2，`Player.java:1952-1958`）
   ///
   /// 早先误把两者统一成 `getSpeed() × 0.1`（0.01 格/刻），比原版慢 15 倍
   /// （原版竖直是 0.05×3 = 0.15 格/刻）⇒ 实机反馈"飞行慢得像蜗牛"。
@@ -368,7 +368,7 @@ class PlayerController {
       //   LivingEntity:2658  move(MoverType.SELF, getDeltaMovement())
       //   LivingEntity:2460  movementY -= getEffectiveGravity()
       //   LivingEntity:2474  setDeltaMovement(× verticalFriction)      // 0.98
-      //   LivingEntity:2707  getFlyingSpeed() = getSpeed() × 0.1
+      //   Player:1952-1958   getFlyingSpeed() = abilities.flyingSpeed（疾跑 ×2）
       //
       // 顺序不可换：先按**未扣重力**的速度位移，再扣重力，最后乘摩擦。
       // `getFrictionInfluencedSpeed` 空中返回 `getFlyingSpeed()`（:2699），**不读**
@@ -376,27 +376,26 @@ class PlayerController {
 
       // ① moveRelative：`setDeltaMovement(δ + input × getFlyingSpeed())`
       //   判据 Entity:1741 `moveRelative` → `setDeltaMovement(deltaMovement.add(delta))`
-      // `getFlyingSpeed()` = `getSpeed() × 0.1`（LivingEntity:2707）。
+      // **判据 `Player.getFlyingSpeed()`（`Player.java:1952-1958`）**：
+      //   if (this.abilities.flying && !this.isPassenger()) {
+      //     return this.isSprinting()
+      //         ? this.abilities.getFlyingSpeed() * 2.0F
+      //         : this.abilities.getFlyingSpeed();
+      //   }
+      // 即：创造飞行（非载具）的水平注入 = `abilities.flyingSpeed`
+      // （默认 0.05 格/刻，`Abilities.java:13/20`），疾跑 ×2。
+      // 经 `moveRelative`（`Entity.java:1741`）注入，input 长度 > 1 时
+      // 按 `getInputVector`（`Entity.java:1752`）归一化折算。
       //
-      // **`getSpeed()` 是属性值 0.1，不是格/秒**（判据 Player:209
-      // `Attributes.MOVEMENT_SPEED, 0.1F`）。所以：
-      //   getFlyingSpeed() = 0.1 × 0.1 = **0.01 格/刻 = 0.2 格/秒**
-      //
-      // **别拿 [PlayerMotion.walkSpeed]（格/秒）去反推**——那是地面行走速度，
-      // 走的是另一套口径（`getFrictionInfluencedSpeed` 地面分支乘 0.216/friction³，
-      // LivingEntity:2700-2702）。早先误用 `walkSpeed / 20 × 0.1` = 0.2156 格/刻，
-      // 比原版快 21 倍（实机反馈"飞行慢得像蜗牛"就是这个反向偏快）。
-      //
-      // 原版飞行确实**很慢**（0.2 格/秒），这是判据，不是 bug。
-      //
-      // **不按 isSprinting 放大**——判据里没有这个分支（原版飞行速度与疾跑无关）。
-      // 水平：判据 `LivingEntity.getFlyingSpeed()`（`LivingEntity.java:2707`）
-      // = `getSpeed() × 0.1`，经 `moveRelative`（`Entity.java:1741`）注入，
-      // 其中 input 长度 > 1 时按 `getInputVector`（`Entity.java:1752`）归一化折算。
-      // `getSpeed()` 来自服务器下发的 `Abilities.walkingSpeed`（判据
-      // `Player.java:639`：`setBaseValue(abilities.getWalkingSpeed())`），
-      // 空中再 ×0.1（`LivingEntity.java:2707`）。
-      final flySpeed = (abilities?.walkingSpeed ?? PlayerMotion.moveSpeedAttribute) * 0.1;
+      // **别抄基类 `LivingEntity.getFlyingSpeed()`（`LivingEntity.java:2707-2709`）**
+      // ——它的 `getSpeed() × 0.1` 分支是给**被玩家骑乘的载具**用的，
+      // Player 覆盖了它。2026-10-07 实测 bug：错抄基类得到 0.01 格/刻，
+      // 飞行终速只有 2.02 格/秒，比行走（4.32 格/秒）还慢一半多。
+      // `Abilities.walkingSpeed`（判据 `Player.java:639`
+      // `setBaseValue(abilities.getWalkingSpeed())`）只喂地面行走，**不参与飞行**。
+      // 判据 `Player.java:1952-1958`（见上）：flyingSpeed，疾跑 ×2。
+      final flyingSpeedBase = abilities?.flyingSpeed ?? 0.05;
+      final flySpeed = input.sprint ? flyingSpeedBase * 2.0 : flyingSpeedBase;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));

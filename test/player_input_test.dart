@@ -140,7 +140,6 @@ void main() {
   test('飞行竖直：逐字翻译 Player.travel → 上下严格对称、6.5625 格/秒', () {
     // 判据 mc-sources/minecraft-26.2，逐字翻译（顺序不可换）：
     //   LivingEntity:2656  moveRelative(getFrictionInfluencedSpeed) —— δ + input×flySpeed
-    //   LivingEntity:2707  getFlyingSpeed() = getSpeed()×0.1 = 0.2156 格/刻
     //   LivingEntity:2658  move(MoverType.SELF, deltaMovement)   —— 位移用**注入值**
     //   Player:1398setDeltaMovement(y = originalMovementY × 0.6)
     //
@@ -150,8 +149,8 @@ void main() {
     // - 竖直：`inputYa * abilities.getFlyingSpeed() * 3.0F`（`LocalPlayer.java:844`）
     //   = 0.15 格/刻 —— 这是**客户端本地预测**的独立一段，在 `super.aiStep()`
     //   之前跑，不经过 `getInputVector`。
-    // - 水平：`getFlyingSpeed() = getSpeed() × 0.1`（`LivingEntity.java:2707`）
-    //   = 0.01 格/刻，经 `moveRelative` 注入。
+    // - 水平：`getFlyingSpeed() = abilities.flyingSpeed`（`Player.java:1952-1958`）
+    //   = 0.05 格/刻（疾跑 ×2），经 `moveRelative` 注入。
     final up = _flyFor((i) => i.jump = true);
     final down = _flyFor((i) => i.sneak = true);
     expect(up, closeTo(6.5625, 1e-3));
@@ -165,19 +164,22 @@ void main() {
     expect(idle.abs(), lessThan(1e-6));
   });
 
-  test('飞行水平：getFlyingSpeed=getSpeed×0.1、位移用未衰减值 → 2.536 格/秒', () {
-    // 判据 LivingEntity:2656→2658 + 2474：
-    //   ① moveRelative：δ + input × 0.2156   ② move 用**未衰减**值   ③ × airDrag 0.91
-    // 原版离线递推黄金值（1 秒 = 20 刻，含首帧相位）：1.1749 格。
-    // yaw=0 时前方向是 −Z，故位移为负（判据黄金值 1.1749 格）。
+  test('飞行水平：getFlyingSpeed=abilities.flyingSpeed（疾跑×2）→ 5.8744 格/秒', () {
+    // 判据 `Player.java:1952-1958`：
+    //   isSprinting() ? abilities.getFlyingSpeed() * 2.0F : abilities.getFlyingSpeed();
+    // 注入 0.05（疾跑 0.10）→ move 用未衰减值 → × airDrag 0.91
+    // （`LivingEntity.travelInAir` 空中分支 2474）。
+    // 原版离线递推黄金值（1 秒 = 19 刻相位，尚未收敛到终速）：5.8744 格。
+    // 终速 0.05×0.91/0.09 = 0.5056 格/刻 = 10.11 格/秒（疾跑 20.22）。
+    // yaw=0 时前方向是 −Z，故位移为负。
     final walk = _flyForHorizontal((i) => i.move.y = 1);
-    expect(walk, closeTo(-1.1749, 1e-3));
+    expect(walk, closeTo(-5.8744, 1e-3));
 
-    // **疾跑不改变飞行速度**——判据 `getFlyingSpeed()` 只看 getSpeed()，
-    // 不看 isSprinting（早先给飞行加了 ×2 疾跑倍率，属自行发挥）。
+    // **疾跑 ×2**——判据 `Player.java:1954`（被 Player 覆盖，基类 LivingEntity:2707
+    // 的 getSpeed()×0.1 是载具分支，不要抄它——早先错抄导致飞行比行走还慢）。
     final run = _flyForHorizontal((i) { i.move.y = 1; i.sprintToggle = true; });
-    expect(run, closeTo(walk, 1e-6),
-        reason: '原版飞行速度与疾跑无关');
+    expect(run, closeTo(-11.7487, 1e-3),
+        reason: '判据：飞行疾跑 ×2（Player.java:1954）');
 
     // 松手：airDrag ×0.91/刻 衰减，速度不清零（原版惯性）。
     final idle = _flyForHorizontal((i) {});
@@ -185,12 +187,12 @@ void main() {
         reason: '松手后 airDrag 指数衰减到0（不清零是原版惯性，但会趋 0）');
   });
 
-  test('飞行：abilities.flyingSpeed 只影响竖直、不影响水平', () {
-    // 判据（2026-10-07 查实，推翻了早先"两侧都不读它"的判断）：
+  test('飞行：abilities.flyingSpeed 同时驱动水平与竖直', () {
+    // 判据（2026-10-07 查实，推翻早先"水平不读它"的判断）：
     // - 竖直：`LocalPlayer.java:844` `inputYa * abilities.getFlyingSpeed() * 3.0F`
-    //   ⇒ **读** `Abilities.flyingSpeed`（默认 0.05）。
-    // - 水平：`LivingEntity.java:2707` `getFlyingSpeed() = getSpeed() × 0.1`
-    //   ⇒ **不读**，只看 `Attributes.MOVEMENT_SPEED`。
+    //   ⇒ 读 `Abilities.flyingSpeed`（默认 0.05）。
+    // - 水平：`Player.java:1952-1958` `getFlyingSpeed()` = `abilities.flyingSpeed`
+    //   ⇒ 读 `Abilities.flyingSpeed`（疾跑 ×2）。
     final fast = PlayerController(
       world: EmptyWorld(),
       player: Player(),
@@ -212,10 +214,10 @@ void main() {
     expect(vFast, closeTo(vNormal * 2, 1e-3),
         reason: '判据：竖直注入 ∝ abilities.flyingSpeed');
 
-    // 水平：不受 flyingSpeed 影响。
+    // 水平：flyingSpeed 加倍 ⇒ 位移加倍。
     final hFast = _flyForHorizontal((c) { c.move.y = 1; }, flyingSpeed: 0.1);
     final hNormal = _flyForHorizontal((c) { c.move.y = 1; }, flyingSpeed: 0.05);
-    expect(hFast, closeTo(hNormal, 1e-6),
-        reason: '判据：水平只看 getSpeed() × 0.1');
+    expect(hFast, closeTo(hNormal * 2, 1e-3),
+        reason: '判据：水平 getFlyingSpeed() = abilities.flyingSpeed');
   });
 }
