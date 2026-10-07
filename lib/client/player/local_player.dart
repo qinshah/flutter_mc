@@ -94,6 +94,7 @@ class LocalPlayer {
     VoxelCollision? collision,
     this.abilities,
     this.onFlyingToggled,
+    this.onSprintingChanged,
   }) : collision = collision ?? VoxelCollision(world);
 
   final CollisionWorld world;
@@ -105,6 +106,95 @@ class LocalPlayer {
 
   /// 双击空格切换飞行后回调（app 壳 → session.sendAbilities 上报）。
   final void Function(bool flying)? onFlyingToggled;
+
+  /// 加速态变化回调（app 壳 → session.sendSprinting 上报；判据
+  /// `LocalPlayer.sendIsSprintingIfNeeded`，`LocalPlayer.java:304-309`）。
+  final void Function(bool sprinting)? onSprintingChanged;
+
+  // —— 加速状态机（判据 `LocalPlayer.aiStep`，`LocalPlayer.java:764-790`）——
+
+  /// 双击 W 的判定窗口（判据 `Options.java:623` `sprintWindow` 默认 **7 刻**）。
+  static const int sprintWindowTicks = 7;
+
+  int _sprintTriggerTicks = 0;
+
+  /// 上刻末的"有前进冲动"采样（判据 `LocalPlayer.java:741`：
+  /// `hasForwardImpulse` 在 `input.tick()` **之前**采样——即上刻末状态。
+  /// 双击 W 依赖这个滞后一刻的口径：松开的那个刻置窗口，再按的刻起跑）。
+  bool _forwardImpulsePrevTick = false;
+
+  /// 上刻末的潜行键采样（判据 `LocalPlayer.java:740` `wasShiftKeyDown`）。
+  bool _wasShiftKeyDown = false;
+
+  /// 上一次 `move()` 是否发生水平碰撞（判据 `shouldStopRunSprinting` 的
+  /// `horizontalCollision`；`minorHorizontalCollision` 未实现按 false，债）。
+  bool _horizontalCollision = false;
+
+  /// 位置上行读（`ServerboundMovePlayerPacket` 的 flags 位）。
+  bool get horizontalCollision => _horizontalCollision;
+
+  bool _sprinting = false;
+
+  /// 是否正在加速（`Player.isSprinting()`；速度倍率与上行都读它）。
+  bool get isSprinting => _sprinting;
+
+  /// 判据 `Player.setSprinting` → 状态变化经 [onSprintingChanged] 上行
+  /// （`sendIsSprintingIfNeeded`，`LocalPlayer.java:304-309`：变了才发）。
+  void _setSprinting(bool value) {
+    if (_sprinting == value) return;
+    _sprinting = value;
+    onSprintingChanged?.call(value);
+  }
+
+  /// 每刻推进一次加速状态机（原版在 `aiStep`，20Hz）。
+  void _tickSprint(Input input) {
+    // `LocalPlayer.java:730-731`
+    if (_sprintTriggerTicks > 0) _sprintTriggerTicks--;
+
+    // `:764-766`：潜行（上刻采样）/后退 → 取消双击窗口。
+    // 子集：`isSlowDueToUsingItem` 未实现（使用物品不存在），恒 false——债。
+    if (_wasShiftKeyDown || input.move.y < 0) {
+      _sprintTriggerTicks = 0;
+    }
+
+    // `canStartSprinting`（`LocalPlayer.java:1095-1102`）。子集：
+    // - `isSprintingPossible`（:1089-1093）：`hasEnoughFood...` 对创造恒 true、
+    //   `isMobilityRestricted`/浅水未实现——债；
+    // - `isSlowDueToUsingItem`、`isFallFlying` 同上恒 false；
+    // - `isMovingSlowly`（:650-652）子集 = 潜行中（爬行未实现）。
+    final hasForwardImpulseNow = input.move.y > 1e-5; // ClientInput.java:17
+    final canStartSprinting = !_sprinting && hasForwardImpulseNow && !input.shift;
+    if (canStartSprinting) {
+      // `:769-775`——`hasForwardImpulse` 是**上刻**采样（:741）：
+      // 双击 W = 松开的那个刻置窗口（窗口 tick 数），窗口内再按 W
+      // （本刻 current=true、上刻=false）⇒ 起跑。
+      if (!_forwardImpulsePrevTick) {
+        if (_sprintTriggerTicks > 0) {
+          _setSprinting(true);
+        } else {
+          _sprintTriggerTicks = sprintWindowTicks;
+        }
+      }
+
+      // `:777-779`——Ctrl **按住**即加速（`KeyboardInput.java:31` 按住式）。
+      if (input.sprint) {
+        _setSprinting(true);
+      }
+    }
+
+    // `:782-790` + `shouldStopRunSprinting`（`:883-885`）。子集：
+    // `!isSprintingPossible` 未实现恒 false；`minorHorizontalCollision` 恒 false
+    // （即任何水平碰撞都停——原版跨半砖这类"轻微碰撞"不停，债）。
+    if (_sprinting) {
+      if (!hasForwardImpulseNow || _horizontalCollision) {
+        _setSprinting(false);
+      }
+    }
+
+    // `:739-741` 的采样基准供下一刻使用。
+    _wasShiftKeyDown = input.shift;
+    _forwardImpulsePrevTick = hasForwardImpulseNow;
+  }
 
   // —— 双击空格窗口（REF: LocalPlayer.aiStep：jumpTriggerTime=7 刻 = 0.35s）——
   bool _wasJumping = false;
@@ -125,6 +215,9 @@ class LocalPlayer {
   /// `Player.java:1395-1400`）。与 [_verticalTickAccum] 分开是因为两条路径
   /// 不能同时推进（飞行时行走分支直接 return）。
   double _flyTickAccum = 0;
+
+  /// 加速状态机的刻累加器（每刻一次，`aiStep` 口径）。
+  double _sprintTickAccum = 0;
 
   /// 本刻是否已起跳（原版 `noJumpDelay = 10` 的轻量替身：防止按住空格
   /// 在一个刻内重复注入初速；原版是 10 刻冷却，本期只保证"每刻至多一次"）。
@@ -163,6 +256,15 @@ class LocalPlayer {
 
   /// 一个固定步长的物理推进。
   void _step(double dt, Input input) {
+    // —— 加速状态机：每刻一次（原版 `aiStep` 20Hz；飞行/行走共用）——
+    // 阈值带 epsilon：6×(1/120) 的浮点和可能略小于 0.05，会导致状态机
+    // 偶发晚一拍（2026-10-07 实测）。
+    _sprintTickAccum += dt;
+    while (_sprintTickAccum >= tickSeconds - 1e-9) {
+      _sprintTickAccum -= tickSeconds;
+      _tickSprint(input);
+    }
+
     // —— 双击空格切飞行（REF: LocalPlayer.aiStep，jumpTriggerTime=7 刻）——
     final mayfly = abilities?.mayfly ?? false;
     if (mayfly) {
@@ -190,9 +292,11 @@ class LocalPlayer {
     }
 
     // —— 水平：输入是玩家本地坐标（y 前、x 右），按 yaw 转到世界系 ——
+    // 速度倍率读 `_sprinting`（判据 `Player.getFrictionInfluencedSpeed` ←
+    // `isSprinting()`；键位只是触发条件）。
     final speed = input.shift
         ? sneakSpeed
-        : input.sprint
+        : _sprinting
             ? sprintSpeed
             : walkSpeed;
     if (input.isMoving) {
@@ -259,6 +363,8 @@ class LocalPlayer {
     // 被挡的轴速度清零（贴墙滑动由 collision 的逐轴求解保证）。
     if (result.hitX) player.velocity.x = 0;
     if (result.hitZ) player.velocity.z = 0;
+    // 水平碰撞供加速状态机的 `shouldStopRunSprinting` 用（:883-885）。
+    _horizontalCollision = result.hitX || result.hitZ;
 
     player.applyMove(result);
     if (result.hitY) {
@@ -386,7 +492,8 @@ class LocalPlayer {
       // `setBaseValue(abilities.getWalkingSpeed())`）只喂地面行走，**不参与飞行**。
       // 判据 `Player.java:1952-1958`（见上）：flyingSpeed，疾跑 ×2。
       final flyingSpeedBase = abilities?.flyingSpeed ?? 0.05;
-      final flySpeed = input.sprint ? flyingSpeedBase * 2.0 : flyingSpeedBase;
+      // 疾跑 ×2（判据 `Player.java:1952-1958`：`isSprinting()` 状态机裁决）。
+      final flySpeed = _sprinting ? flyingSpeedBase * 2.0 : flyingSpeedBase;
       if (input.isMoving) {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
@@ -459,6 +566,8 @@ class LocalPlayer {
     );
     player.applyMove(result);
     player.onGround = result.hitY && result.hasBlockBelow;
+    // 水平碰撞供加速状态机用（飞行疾跑撞墙同样停，:883-885）。
+    _horizontalCollision = result.hitX || result.hitZ;
     // 飞行态也要插帧（判据 `EntityRenderer.java:164` 对所有实体一律插值）。
     _advanceTickProgress();
   }

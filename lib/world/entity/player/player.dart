@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:vector_math/vector_math.dart';
 
 import 'package:flutter_mc/game/collision.dart';
+import 'package:flutter_mc/world/entity/player/inventory.dart';
 
 /// 玩家状态（移植自 fscraft player.dart，去掉存档面：位置由服务器校正驱动）。
 /// 纯数据 + 纯逻辑：不 import flutter_scene。
@@ -12,10 +13,15 @@ class Player {
     Vector3? position,
     this.yaw = 0,
     this.pitch = 0,
-  }) : position = position ?? Vector3.zero();
+  })  : position = position ?? Vector3.zero(),
+        inventory = Inventory();
 
   Vector3 position;
   Vector3 velocity = Vector3.zero();
+
+  /// 物品栏（原版 `player.getInventory()`；当前为最小实现——仅选中槽位，
+  /// 判据 `Inventory.java:66-76/:130-132`，完整实现见翻译债 §8）。
+  final Inventory inventory;
 
   /// yaw 绕 y 轴（弧度，0 = 朝 -Z），pitch 正值向下。
   double yaw;

@@ -52,42 +52,13 @@ void main() {
     expect(pressedInput([LogicalKeyboardKey.shiftRight]).shift, isTrue);
   });
 
-  group('加速（Ctrl）为切换式：按一次激活、松开移动键取消', () {
-    test('按下 Ctrl 产生边沿（sprintPressed），松开不产生', () {
-      var prevHeld = false;
+  group('加速键为按住式（判据 KeyboardInput.java:31 keySprint.isDown()）', () {
+    test('Ctrl 按住 ⇒ sprint=true，松开 ⇒ false（状态机在 LocalPlayer）', () {
       final input = Input();
-
-      // 第一帧按下 ⇒ 边沿
-      KeyMap.apply({LogicalKeyboardKey.controlLeft}, input,
-          sprintPrevHeld: prevHeld);
-      expect(input.sprintPressed, isTrue);
-      input.toggleSprint();
-      expect(input.sprint, isTrue);
-
-      // 下一帧仍按着 ⇒ 无边沿（不重复切换）
-      prevHeld = true;
-      KeyMap.apply({LogicalKeyboardKey.controlLeft}, input,
-          sprintPrevHeld: prevHeld);
-      expect(input.sprintPressed, isFalse);
-      expect(input.sprint, isTrue, reason: '按住期间保持激活');
-
-      // 松开 Ctrl ⇒ 也不该取消（它是切换式，不是按住式）
-      KeyMap.apply({}, input, sprintPrevHeld: prevHeld);
-      expect(input.sprint, isTrue,
-          reason: '松开 Ctrl 不取消激活——否则又变回按住式');
-    });
-
-    test('松开移动键取消激活', () {
-      final input = Input()
-        ..move.y = 1
-        ..toggleSprint();
-      expect(input.sprint, isTrue);
-      input.clearSprintWhenNotMoving();
-      expect(input.sprint, isTrue, reason: '仍在移动 ⇒ 保持激活');
-
-      input.move.y = 0; // 松开 W
-      input.clearSprintWhenNotMoving();
-      expect(input.sprint, isFalse, reason: '松开移动键 ⇒ 取消激活');
+      KeyMap.apply({LogicalKeyboardKey.controlLeft}, input);
+      expect(input.sprint, isTrue, reason: '按住 Ctrl = 加速键按下');
+      KeyMap.apply({}, input);
+      expect(input.sprint, isFalse, reason: '松开 Ctrl = 加速键抬起');
     });
   });
 

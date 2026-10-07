@@ -178,7 +178,7 @@ void main() {
 
     // **疾跑 ×2**——判据 `Player.java:1954`（被 Player 覆盖，基类 LivingEntity:2707
     // 的 getSpeed()×0.1 是载具分支，不要抄它——早先错抄导致飞行比行走还慢）。
-    final run = _flyForHorizontal((i) { i.move.y = 1; i.sprintToggle = true; });
+    final run = _flyForHorizontal((i) { i.move.y = 1; i.sprint = true; });
     expect(run, closeTo(-11.7487, 1e-3),
         reason: '判据：飞行疾跑 ×2（Player.java:1954）');
 
