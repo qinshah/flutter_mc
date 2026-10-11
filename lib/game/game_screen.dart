@@ -188,9 +188,26 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 探针用：上行计数（每 20 次打一行）。
   int _sendTraceCount = 0;
 
-  /// 合成输入（`--dart-define=AUTOWALK=true`）：端到端取证用——驱动 tap 模拟不了
-  /// 键盘，所以由调试开关直接注入"一直向前走 + 每 2 秒跳一下"。默认关，不参与发行。
-  static const bool _autoWalk = bool.fromEnvironment('AUTOWALK');
+  /// 探针用：逐包上行序号（[MOVE] 与 [WIRE>] 对齐用，2026-10-11 怼墙抽搐取证）。
+  int _moveSendSeq = 0;
+  bool _movePrevSet = false;
+  double _movePrevX = 0, _movePrevY = 0, _movePrevZ = 0;
+
+  /// 合成输入（`--dart-define=AUTOWALK=true|walk`）：端到端取证用——驱动 tap
+  /// 模拟不了键盘，所以由调试开关直接注入"一直向前走 + 每 2 秒跳一下"。默认关。
+  //
+  // 【坑】2026-10-11：此处曾是 `bool.fromEnvironment('AUTOWALK')`，而
+  // `--dart-define=AUTOWALK=walk` 的值 "walk" 不是合法 bool ⇒ 解析成 false
+  // ⇒ walk 探针从未激活过（实测日志 move=(0,0)、phys=0）。改为 "true" 或
+  // "walk" 都算开（const 表达式里 String.isNotEmpty 不可求值，只能显式判等）。
+  static const bool _autoWalk =
+      bool.fromEnvironment('AUTOWALK') ||
+          String.fromEnvironment('AUTOWALK') == 'walk';
+
+
+  /// AUTOWALK=walk：纯行走变体（不进飞行），专测台阶拒绝循环。
+  static const bool _autoWalkWalkOnly =
+      String.fromEnvironment('AUTOWALK') == 'walk';
   double _autoWalkTime = 0;
 
   /// 渲染二分开关（`--dart-define=RENDER_DEBUG=opaque`）：只挂 opaque 层。
@@ -659,9 +676,35 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         if (_trace) {
           debugPrint('[CORR] ($x, $y, $z) teleportId=$teleportId '
               'isTeleport=$isTeleport');
+          // 【取证】服务器拒绝时，转储客户端本地 3×3×3 网格的身份串——
+          // 与服务器几何比对，锁定分歧格。
+          final px = _player.position.x.floor();
+          final py = _player.position.y.floor();
+          final pz = _player.position.z.floor();
+          final buf = StringBuffer('[GRID] ($px,$py,$pz)');
+          String short(String? id) {
+            if (id == null) return '?';
+            final noNs = id.substring(id.indexOf(':') + 1);
+            final br = noNs.indexOf('[');
+            return br < 0 ? noNs : noNs.substring(0, br);
+          }
+
+          for (var dy = 1; dy >= -1; dy--) {
+            buf.write(' | y${py + dy}:');
+            for (var dz = -1; dz <= 1; dz++) {
+              for (var dx = -1; dx <= 1; dx++) {
+                buf.write(short(_controller.world.blockIdentityAt(px + dx, py + dy, pz + dz)));
+                buf.write(',');
+              }
+            }
+          }
+          debugPrint(buf.toString());
         }
         // 服务器权威位姿（相对标志已在会话侧解成绝对值）；直接采信并清速度。
-        _player.position.setValues(x, y, z);
+        // 【2026-10-11】此前实测"抽搐"曾疑回拉，诊断确认根因 = 漏发
+        // ClientTickEnd（服务器 knownMovement 状态机失配致位置漂移→拒绝循环），
+        // sendMovePlayer 补发后恢复正常回拉响应（原版权威位姿语义）。
+        _player.setPos(x, y, z);
         // 原版 setDeltaMovement(newValues.deltaMovement())：速度也以服务器下发为准。
         _player.velocity.setValues(dx, dy, dz);
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
@@ -1023,15 +1066,17 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     // 0.5) 合成输入（仅调试开关开启时）。
     if (_autoWalk) {
       _autoWalkTime += dt;
-      // 边走边转（螺旋）：只朝一个方向走可能正对墙，位置不变会让人误判"物理没生效"。
-      _player.yaw += 0.9 * dt;
+      // 恒向直走（2026-10-12 用户口径：一直朝一个方向、不跳即可触发传送抽搐；
+      // 旧版"螺旋转向 + 每 2 秒跳 + 疾跑"引入了多余变量，取证序列更难复算）。
       _input
-        ..move.y = 1 // 一直向前
-        ..jump = _autoWalkTime % 2.0 < 0.15 // 每 2 秒按一下空格
-        // 疾跑跑图（取证：复现"高速跑图卡输入"，20 格/秒 飞行疾跑）
-        ..sprint = true;
+        ..move.y = 1 // 一直向前（yaw 恒定 = 出生朝向，不再每帧旋转）
+        ..jump = false
+        ..sprint = false;
       // 3 秒后进创造飞行（服务器已下发 mayfly），复现高速跑图场景。
-      if (_autoWalkTime > 3 && !_controller.flying) {
+      // AUTOWALK=walk 变体：**永不飞行**——纯行走，专测水平拒绝循环。
+      if (_autoWalkWalkOnly) {
+        _controller.flying = false;
+      } else if (_autoWalkTime > 3 && !_controller.flying) {
         _controller.flying = true;
         widget.session.sendAbilities(flying: true);
       }
@@ -1049,17 +1094,32 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       yawDeg: 180.0 - _player.yaw * 180.0 / math.pi, // 原版 yRot 逆变换
       pitchDeg: _player.pitch * 180.0 / math.pi,
       horizontalCollision: _controller.horizontalCollision,
-      send: (variant, x, y, z, yRot, xRot, onGround, hCol) =>
-          widget.session.sendMovePlayer(
-        variant: variant.index,
-        x: x,
-        y: y,
-        z: z,
-        yRot: yRot,
-        xRot: xRot,
-        onGround: onGround,
-        horizontalCollision: hCol,
-      ),
+      send: (variant, x, y, z, yRot, xRot, onGround, hCol) {
+        // 【取证】逐包上行记录（与 [WIRE<] 回拉逐条对齐，锁定 gate2 拒绝的
+        // 上行目标值）。坐标用 Dart toString（最短往返表示，round-trip 无损）：
+        // 6 位小数无法区分"精确贴面 -291.7"与"微穿透 -291.7000016"，这是
+        // 2026-10-11 run4 取证的盲点；Δ 为与上一包的差，供对齐单刻速度上限。
+        if (_trace) {
+          final dxx = _movePrevSet ? x - _movePrevX : 0.0;
+          final dyy = _movePrevSet ? y - _movePrevY : 0.0;
+          final dzz = _movePrevSet ? z - _movePrevZ : 0.0;
+          debugPrint('[MOVE] #${++_moveSendSeq} v=$variant '
+              '($x,$y,$z) Δ($dxx,$dyy,$dzz) '
+              'onGround=$onGround hCol=$hCol');
+          _movePrevSet = true;
+          _movePrevX = x; _movePrevY = y; _movePrevZ = z;
+        }
+        widget.session.sendMovePlayer(
+          variant: variant.index,
+          x: x,
+          y: y,
+          z: z,
+          yRot: yRot,
+          xRot: xRot,
+          onGround: onGround,
+          horizontalCollision: hCol,
+        );
+      },
     );
 
     // 1.2) 手持槽位 ensure 上行（判据 `MultiPlayerGameMode.tick:305-307` →
@@ -1121,6 +1181,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
               '${_player.position.z}) onGround=${_player.onGround} '
               'vy=${_player.velocity.y}');
         }
+        // 【取证】第二条 20 Hz 上行路径的逐包记录（与 [MOVE] 同格式，
+        // tag 区分；两条路径交错上行，须各自留痕才能对齐回拉）。
+        debugPrint('[MOVE2] #${++_moveSendSeq} v=cmd '
+            '(${_player.position.x.toStringAsFixed(6)},'
+            '${_player.position.y.toStringAsFixed(6)},'
+            '${_player.position.z.toStringAsFixed(6)}) '
+            'onGround=${_player.onGround}');
       }
       widget.session.commands.send(
         CmdUpdatePlayer(

@@ -817,7 +817,8 @@ final class RemoteSession {
     if (!_playPhase || _closed) return;
     if (kTraceWire) {
       print('[WIRE>] movePlayer v=$variant '
-          '(${x.toStringAsFixed(2)},${y.toStringAsFixed(2)},${z.toStringAsFixed(2)})');
+          '(${x.toStringAsFixed(6)},${y.toStringAsFixed(6)},${z.toStringAsFixed(6)}) '
+          'onGround=$onGround hCol=$horizontalCollision');
     }
     final MovePlayer packet;
     switch (variant) {
@@ -835,6 +836,15 @@ final class RemoteSession {
             onGround: onGround, horizontalCollision: horizontalCollision);
     }
     _sendTyped(ProtocolPhase.play, packet);
+    // **ClientTickEnd 每刻必发**（判据 Minecraft.java:1930——原版客户端每个
+    // client tick 结束时无条件发送单例包；notes 1.2 #13"移动包 + ClientTickEnd
+    // 成对"）。服务器的 receivedMovementThisTick / knownMovement 状态机依赖它
+    // （ServerGamePacketListenerImpl.java:2153-2160）：缺发 ⇒ 服务器侧位置按
+    // 最后一次已知移动持续漂移 ⇒ 我们的干净位置被判为"新碰撞"⇒ 拒绝回拉循环
+    // （2026-10-11 实机"怼墙抽搐"最终根因；此前只有 updatePlayer 路径发它，
+    // PositionSync 实际走的 sendMovePlayer 漏发）。
+    _sendTyped(ProtocolPhase.play, const ClientTickEnd());
+    if (kTraceWire) print('[WIRE>] tickEnd');
   }
 
   /// 加速态上行（判据 `LocalPlayer.sendIsSprintingIfNeeded`，

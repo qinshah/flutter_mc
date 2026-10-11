@@ -6,6 +6,7 @@ import 'package:mc_session/mc_session.dart';
 import 'game/game_screen.dart';
 import 'screens/confirm_screen.dart';
 import 'screens/multiplayer/direct_join_server_screen.dart';
+import 'screens/multiplayer/join_flow.dart';
 import 'screens/multiplayer/join_multiplayer_screen.dart';
 import 'screens/multiplayer/manage_server_screen.dart';
 import 'screens/options/video_settings_screen.dart';
@@ -36,7 +37,37 @@ final Map<String, WidgetBuilder> mcRoutes = {
   '/': (context) => const TitleScreen(),
   '/multiplayer': (context) => const JoinMultiplayerScreen(),
   '/settings/video': (context) => const VideoSettingsScreen(),
+  '/autojoin': (context) => const _AutoJoinScreen(),
 };
+
+/// 自动进服（`--dart-define=AUTOJOIN=<ip:port>`，取证脚本用）。
+///
+/// 免去手动点 UI：启动即以给定地址走 [joinServer]（成功后其内部 push '/game'），
+/// 失败原因直接打日志——探针场景无需 UI 反馈。
+class _AutoJoinScreen extends StatefulWidget {
+  const _AutoJoinScreen();
+
+  @override
+  State<_AutoJoinScreen> createState() => _AutoJoinScreenState();
+}
+
+class _AutoJoinScreenState extends State<_AutoJoinScreen> {
+  @override
+  void initState() {
+    super.initState();
+    final addr = const String.fromEnvironment('AUTOJOIN');
+    final server = ServerData(name: addr, ip: addr);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // join_flow.dart 的公共流程（与"直接连接"按钮同一入口）。
+      joinServer(context, server: server, connector: defaultJoinConnector);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Center(child: Text('AUTOJOIN...')));
+}
 
 Route<dynamic>? Function(RouteSettings) mcOnGenerateRoute = (settings) {
   switch (settings.name) {

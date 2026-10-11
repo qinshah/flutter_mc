@@ -84,7 +84,9 @@ final class MockLoginClient {
 
   /// 把会话推到 play 阶段（notes 1.2 时序）：压缩 → login finished/ack →
   /// client information → known packs → registry ×2 → tags → finish/ack →
-  /// play login → player loaded。返回前客户端已发 playerLoaded。
+  /// play login → 配置完成、进入 play。**不等 playerLoaded**：2026-10-11 起
+  /// 客户端按原版 LevelLoadTracker 就绪状态机改为命令驱动发送（session 命令
+  /// sendPlayerLoaded），登录流不再自动发送——mock 只负责把会话推进到 play。
   Future<void> runToPlay() async {
     await waitFrames(2); // handshake + hello
     cursor = 2;
@@ -143,9 +145,6 @@ final class MockLoginClient {
 
     // 7) play：login 包
     send(PlayClientbound.login, _writeGameLogin);
-
-    // 8) 等待 player loaded
-    await expectPacket(PlayServerbound.playerLoaded);
   }
 
   /// 发 play keep-alive（服务器侧 15s 节奏的模拟）。

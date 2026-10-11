@@ -78,9 +78,13 @@ final class RemoteChunkColumn {
     for (final p in packed) {
       final local = p & 0xFFF;
       final stateId = p >>> 12;
-      final lx = (local >> 8) & 15;
-      final ly = (local >> 4) & 15;
-      final lz = local & 15;
+      // 段内坐标位序（判据 `SectionPos.sectionRelative*`，SectionPos.java:100-110）：
+      // X = bit8-11、**Z = bit4-7、Y = bit0-3**（y 最低位！此前 Y/Z 弄反 ⇒ 多方块
+      // 更新落到 y↔z 互换的格子——客户端碰撞缺墙格，怼墙走被服务器拒绝回拉 =
+      // 实机"原地抽搐 + 怼墙动不了"）。
+      final lx = (local >> 8) & 15; // sectionRelativeX
+      final lz = (local >> 4) & 15; // sectionRelativeZ
+      final ly = local & 15;        // sectionRelativeY
       changed |= _setLocal(lx, (sectionY << 4) | ly, lz, stateId);
     }
     return changed;

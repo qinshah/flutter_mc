@@ -43,6 +43,10 @@ class FlutterMcApp extends StatelessWidget {
     return MaterialApp(
       title: 'flutter_mc',
       debugShowCheckedModeBanner: false,
+      // AUTOJOIN 取证：启动直达自动进服屏（routes.dart 的 _AutoJoinScreen）。
+      initialRoute: const String.fromEnvironment('AUTOJOIN').isNotEmpty
+          ? '/autojoin'
+          : '/',
       routes: mcRoutes,
       onGenerateRoute: mcOnGenerateRoute,
     );

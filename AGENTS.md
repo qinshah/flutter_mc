@@ -18,6 +18,28 @@
 keepAlive/cookie/resource-pack/`sendDeferredPackets`、`ClientPacketListener.notifyPlayerLoaded`），
 必须逐行翻译其发送条件与时序。
 
+### 数值精度零误差：类型宽度（float/double）本身是判据
+
+Java 的 `float` 字段**不是**"一个近似的小数"，它是一台正在运行的舍入机器：
+`float32(0.6) = 0.6000000238418579`、`float32(1.8) = 1.7999999523162842`、
+`float32(0.6)/2 = 0.30000001192092896`。这些值与十进制字面量的差可达 1e-8 量级，
+而 Minecraft 的判定体系（`AABB.intersects` 严格不等式、VoxelShape 1e-7 epsilon、
+服务器 knownMovement 门禁）就运行在这个量级上——**1 ulp 之差即可改变行为**
+（实证：建盒半宽 double 0.3 vs float 0.30000001192092896，差 1.19e-8，
+被服务器判 `CLIPPED_INTO_BLOCK` 回拉抽搐，判据 EntityDimensions.java:19-22）。
+
+因此数据精度按**零误差**口径执行：
+
+- 原版声明为 `float` 的字段/表达式（尺寸、眼高、速度、偏移……）参与运算时，
+  MUST 保持 float32 舍入语义，MUST NOT 按 double"数学等价值"代入；
+  Dart 用 `Float32List` 写入读出精确模拟（`(double)(float)v`），见
+  `lib/game/collision.dart` 的 `_asF32`。
+- 原版是 double 的地方 MUST NOT 混入 float32 存储（`Vec3` 是 double，实体位置
+  不用 `vector_math` 的 `Vector3`——float32 存储在 |x|>64 后 ulp ≥ 4e-6，贴面
+  静止即微穿透，判据 Vec3.java:41-43）。
+- 单测黄金值与实机递推值 MUST 位级一致（`==` 或 `expect(..., same 值)`），
+  `closeTo` 容差只允许用于确实跨浮点不可复现边界的地方，并在注释里写明理由。
+
 ### 写代码前必须问自己
 
 > 这段代码的原版 Java 对应物在哪里？它真的不需要翻译吗？
@@ -49,6 +71,7 @@ MUST NOT 合并多个 Java 类到一个文件，也 MUST NOT 另造"更达意"�
 | 顺序错 | 跳跃高度 0.9969 vs 1.2522 格，够不到 1 格方块 | 照抄 `LivingEntity.travelInAir` 的**表达式顺序**（先位移后扣重力），不得"等价改写" |
 | 量纲错 | 飞行快21倍 | 判据给的是**属性值**（`getSpeed()` = 0.1），不得拿我们自己的换算常量代入 |
 | 擅自"合理化" | 飞行松手后速度锁死成失重悬浮 | 原版 `setDeltaMovement(y = originalMovementY × 0.6)` 就是 `× 0.6`，**不得**解读成 `max(injected, afterGravity)` —— 原版看着奇怪的地方也是判据 |
+| float 语义丢失 | 怼墙直走被服务器判 `CLIPPED_INTO_BLOCK` 回拉原地抽搐（vanilla 同服务器不抽搐） | 原版 **`float` 字段的舍入差是判据的一部分**：`EntityDimensions.width` 是 float，半宽 = float32(0.6)/2 = `0.30000001192092896` 而非 double 的 0.3（EntityDimensions.java:19-22），差 1.19e-8 恰好卡在服务器 `AABB.intersects` 严格不等式的判定边上。Dart 无 float 类型不是借口——用 `Float32List` 写入读出精确模拟（见 `lib/game/collision.dart` 的 `Aabb`）。凡原版声明为 `float` 的尺寸/速度/偏移参与运算，先问：这里要不要保持 float32 舍入？ |
 
 **判据值必须能指到源码行号**（如 `Player.java:209`）。指不到 ⇒ 说明是猜的，先去查。
 测试断言原版离线递推出的黄金值，**不断言"我的实现输出"**；测试失败时先怀疑实现、

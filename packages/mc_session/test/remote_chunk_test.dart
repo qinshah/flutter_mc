@@ -22,6 +22,31 @@ void main() {
         minSectionY: minSectionY ?? RemoteChunkColumn.kOverworldMinSectionY,
       );
 
+  test('SectionBlocksUpdate 段内坐标位序：X=bit8-11、Z=bit4-7、Y=bit0-3（判据 SectionPos.java:100-110）', () {
+    // 2026-10-11 实机"怼墙抽搐"根因回归：此前 Y/Z 位序弄反 ⇒ 玩家放置的
+    // 整面墙（多方块更新）落到 y↔z 互换的格子，客户端碰撞缺墙格。
+    final c = column();
+    // 玩家在段 y=5（世界 y=80..95）放 3 个方块：
+    //   A(x=3, y=2, z=7)：vanilla packed pos = x<<8 | z<<4 | y = 0x372
+    //   B(x=15, y=15, z=0)：= 0xFF0
+    //   C(x=0, y=0, z=15)：= 0x00F
+    // stateId 全取 9（grass_block）。packed long = stateId << 12 | pos。
+    final packedA = (9 << 12) | (3 << 8) | (7 << 4) | 2;
+    final packedB = (9 << 12) | (15 << 8) | (0 << 4) | 15;
+    final packedC = (9 << 12) | (0 << 8) | (15 << 4) | 0;
+    expect(c.applySectionChanges(0, 5, 0, [packedA, packedB, packedC]), isTrue);
+
+    // 世界 y = (5<<4) | 局部y。
+    expect(c.stateAt(3, (5 << 4) | 2, 7), 9, reason: 'A：x=3,y=2,z=7');
+    expect(c.stateAt(15, (5 << 4) | 15, 0), 9, reason: 'B：x=15,y=15,z=0');
+    expect(c.stateAt(0, (5 << 4) | 0, 15), 9, reason: 'C：x=0,y=0,z=15');
+
+    // 旧错序（Y/Z 互换）会落到的格子必须仍是空气。
+    expect(c.stateAt(3, (5 << 4) | 7, 2), 0, reason: '旧 bug 落点 (x=3,y=7,z=2)');
+    expect(c.stateAt(15, (5 << 4) | 0, 15), 0, reason: 'B 的旧 bug 落点 (x=15,y=0,z=15)');
+    expect(c.stateAt(0, (5 << 4) | 15, 0), 0, reason: 'C 的旧 bug 落点 (x=0,y=15,z=0)');
+  });
+
   test('overworld：世界 y=143 落在第 12 段（143>>4=8，再减 minSectionY −4）', () {
     final c = column();
     expect(c.minY, -64);

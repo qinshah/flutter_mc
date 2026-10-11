@@ -100,6 +100,18 @@
       （ClientChunkCache.java:137-145）对未迁移列静默丢弃；我们 MUST 发事件
       （渲染端"卸载必达"契约，spec 缩窗场景）—— 有意偏差，勿"修"
 
+## 12. 实体物理（影响正确性·中）
+
+- [ ] 水物理分支缺失：vanilla `LivingEntity.travel` 三分支（air/water/lava，
+      LivingEntity.java travel 系），我们只有 air 分支（`lib/world/entity/player/` 无
+      `travelInWater` 对应物，`isInWater`/浮力/水中摩擦/水中速度属性均未建模）
+  - 后果：浅水区移动速度/浮沉与原版不一致（2026-10-12 怼墙抽搐诊断中确认，
+    非 root cause 但影响轨迹复算与对照实验，见 `docs/walk-jitter-diagnosis.md`）
+- [x] ~~建盒半宽 double 化~~（2026-10-12 已还债：`Aabb` 按
+      `EntityDimensions.makeBoundingBox`（EntityDimensions.java:19-22）的 float
+      语义建盒——float32(0.6)/2 = 0.30000001192092896、头顶 y + float32(1.8)。
+      曾经此差 1.19e-8 被 Paper `hasNewCollision` 判 CLIPPED_INTO_BLOCK 回拉抽搐）
+
 ---
 
 ## 命名 / 路径偏离（非"债"，是纪律偏离，需逐步改正）
