@@ -1031,26 +1031,31 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _processDirty();
 
     // 0.0) 登录期就绪状态机（判据 `LevelLoadTracker.java`）：就绪前不跑物理、
-    // 不上行——原版 loading screen 期间玩家不 tick 的对位。就绪 = 玩家列的段
-    // 已网格化（或 30s 超时 / y 超界豁免），就绪即发 PlayerLoaded 放行服务端
-    // 并开始物理。**一次性**——与已拆除的永续门禁（自造偏差）判据不同。
+    // 不上行——原版 loading screen 期间玩家不 tick 的对位。就绪即发
+    // PlayerLoaded 放行服务端并开始物理。**一次性**——与已拆除的永续门禁
+    // （自造偏差）判据不同。
     if (!_worldReady) {
       final cx = _player.position.x.floor() >> 4;
       final cz = _player.position.z.floor() >> 4;
+      // 原版判据 = **相机所在段**已编译（LevelRenderer.java:272-275：
+      // isSectionCompiledAndVisible(cameraPos) → playerSectionReady.set(true)，
+      // AtomicBoolean 一次性——之后邻居到达的重网格化**不会撤销**）。
+      // 本侧对应 = 该段的 mesh 节点已建出（_remeshSection 同步换新，
+      // node 一旦存在即编译完成过）。
+      // 【2026-10-12 坑】旧实现等"整列全部段且不在脏集合"——邻居列到达会
+      // 不断把玩家段重新标脏 ⇒ 条件实际是"全窗口网格化完毕" ⇒ 每次都吃满
+      // 30s 超时才就绪（原版几秒，实测差近 1 分钟）。
       var sectionReady = false;
       if (_columns.containsKey((cx, cz))) {
-        // 原版判据 = 玩家所在段编译完成（`playerSectionReady`，:128-132）；
-        // 本侧对应 = 该列全部段的节点已挂且无待网格化段。
-        final column = _columns[(cx, cz)]!;
-        sectionReady = List.generate(column.sections.length, (sy) => sy)
-            .every((sy) =>
-                _sectionNodes.containsKey('$cx,$sy,$cz') &&
-                !_dirtySet.contains((cx, sy, cz)));
+        final sectionY = _player.position.y.floor() >> 4;
+        sectionReady = _sectionNodes.containsKey('$cx,$sectionY,$cz');
       }
       _levelLoadTracker.tick(
         playerSectionReady: sectionReady,
         playerY: _player.position.y.floor(),
-        cameraY: _player.position.y.floor(),
+        // 相机 y（判据 WaitingForPlayerChunk.isReady 用 cameraPos，
+        // LevelLoadTracker.java:125；眼高 1.62 = AABB.EYE_HEIGHT）。
+        cameraY: (_player.position.y + 1.62).floor(),
       );
       if (_levelLoadTracker.shouldNotifyPlayerLoaded()) {
         _worldReady = true;
