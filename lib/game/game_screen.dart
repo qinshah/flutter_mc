@@ -658,7 +658,16 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           //   setBaseValue(abilities.getWalkingSpeed()) ⇒ MOVEMENT_SPEED
           // 而水平飞行速度 = `getSpeed() × 0.1`（`LivingEntity.java:2707`）
           // ⇒ **walkingSpeed 决定水平飞行快慢**，必须透传。
-          ..walkingSpeed = walkingSpeed;
+          ..walkingSpeed = walkingSpeed
+          // 判据 `ClientPacketListener.java:2005`：flying = packet.isFlying()
+          // 照单全收（无 mayfly 门禁，门禁在服务器侧
+          // ServerGamePacketListenerImpl.java:2036）——服务器从 playerdata
+          // 恢复的重连飞行状态（退服时在飞 ⇒ 重连 flying=true）。
+          ..flying = flying;
+        // 同步进控制器：飞行物理开关（LocalPlayer.flying，双击空格切换的
+        // 也是它）。【2026-10-12 坑】此前只更新 _abilities 快照，控制器
+        // flying 恒 false ⇒ 重连丢飞行状态，进场直接下坠。
+        _controller.flying = flying;
         debugPrint('[ABIL] mayfly=$mayfly flying=$flying '
             'flySpeed=$flyingSpeed walkSpeed=$walkingSpeed');
       case PositionCorrection(
