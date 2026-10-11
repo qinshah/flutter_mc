@@ -482,7 +482,7 @@ class _ChunkBatchFinishedCodec extends PacketCodecBase<ChunkBatchFinished> {
   ChunkBatchFinished decodeBody(ByteReader r) => ChunkBatchFinished(r.readVarInt());
 
   @override
-  void encodeBody(ByteWriter w, ChunkBatchFinished p) => w.writeVarInt(p.chunksPerTick);
+  void encodeBody(ByteWriter w, ChunkBatchFinished p) => w.writeVarInt(p.batchSize);
 }
 
 class _SetTimeCodec extends PacketCodecBase<SetTime> {

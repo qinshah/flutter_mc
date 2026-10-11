@@ -271,8 +271,8 @@ final class ChunkBatchStart {
 }
 
 final class ChunkBatchFinished {
-  ChunkBatchFinished(this.chunksPerTick);
-  final int chunksPerTick;
+  ChunkBatchFinished(this.batchSize);
+  final int batchSize;
 }
 
 /// REF: `ClientboundSetTimePacket.java` + `world/clock/ClockNetworkState.java`
