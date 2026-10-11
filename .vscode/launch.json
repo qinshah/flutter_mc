@@ -1,0 +1,81 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "flutter_mc",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "flutter_mc (profile mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "flutter_mc (release mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "release"
+        },
+        {
+            "name": "mc_nbt",
+            "cwd": "packages/mc_nbt",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_protocol_v26_2",
+            "cwd": "packages/mc_protocol_v26_2",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_render",
+            "cwd": "packages/mc_render",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_resource",
+            "cwd": "packages/mc_resource",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_session",
+            "cwd": "packages/mc_session",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_ui",
+            "cwd": "packages/mc_ui",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "mc_ui (profile mode)",
+            "cwd": "packages/mc_ui",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "mc_ui (release mode)",
+            "cwd": "packages/mc_ui",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "release"
+        },
+        {
+            "name": "mc_wire",
+            "cwd": "packages/mc_wire",
+            "request": "launch",
+            "type": "dart"
+        }
+    ]
+}
