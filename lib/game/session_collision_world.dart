@@ -2,7 +2,6 @@ import 'package:mc_render/mc_render.dart';
 import 'package:mc_session/mc_session.dart';
 
 import 'collision.dart';
-
 /// 碰撞查询的会话世界适配。
 ///
 /// 原版对应物：`client.multiplayer.ClientLevel` 的 `getBlockState` 那一面——碰撞读的是
@@ -45,5 +44,37 @@ class SessionCollisionWorld implements CollisionWorld {
     final column = _columns[(bx >> 4, bz >> 4)];
     if (column == null) return false; // 未加载：不阻挡
     return _semantics.isCollidable(column.stateAt(bx & 15, by, bz & 15));
+  }
+
+  /// 该格的碰撞形状（判据 `BlockStateBase.getCollisionShape`；身份串 →
+  /// `BlockCollisionShapes`，覆盖族见 block-collision-shapes change）。
+  /// 未加载/越界返回 null（空气语义）。
+  @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) {
+    if (by < kMinY || by >= kMaxY) return null;
+    final column = _columns[(bx >> 4, bz >> 4)];
+    if (column == null) return null;
+    final identity = kBlockStateIdentity262[column.stateAt(bx & 15, by, bz & 15)];
+    if (identity == null) return null;
+    final shape = BlockCollisionShapes.shapeFor(identity);
+    return shape.isEmpty ? null : shape;
+  }
+
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) {
+    if (by < kMinY || by >= kMaxY) return null;
+    final column = _columns[(bx >> 4, bz >> 4)];
+    if (column == null) return null;
+    return kBlockStateIdentity262[column.stateAt(bx & 15, by, bz & 15)];
+  }
+
+  @override
+  double blockFrictionAt(int bx, int by, int bz) {
+    if (by < kMinY || by >= kMaxY) return 0.6;
+    final column = _columns[(bx >> 4, bz >> 4)];
+    if (column == null) return 0.6; // 未加载：空气语义 ⇒ 默认摩擦
+    final identity = kBlockStateIdentity262[column.stateAt(bx & 15, by, bz & 15)];
+    if (identity == null) return 0.6;
+    return BlockCollisionShapes.frictionFor(identity);
   }
 }

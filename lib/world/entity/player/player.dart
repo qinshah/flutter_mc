@@ -4,20 +4,31 @@ import 'package:vector_math/vector_math.dart';
 
 import 'package:flutter_mc/game/collision.dart';
 import 'package:flutter_mc/world/entity/player/inventory.dart';
+import 'package:flutter_mc/world/phys/vec3.dart';
 
 /// 玩家状态（移植自 fscraft player.dart，去掉存档面：位置由服务器校正驱动）。
 /// 纯数据 + 纯逻辑：不 import flutter_scene。
 /// [position] 是脚底中心（原版实体的 posY 在脚底）。
 class Player {
   Player({
-    Vector3? position,
+    this.position = Vec3.zero,
     this.yaw = 0,
     this.pitch = 0,
-  })  : position = position ?? Vector3.zero(),
-        inventory = Inventory();
+  }) : inventory = Inventory();
 
-  Vector3 position;
+  /// **double 位置**（判据 `Entity.xPos/yPos/zPos` 是 double；`Vec3.java:41-43`
+  /// 字段亦 double）。渲染边界才转 float32（[interpolatedPosition]）。
+  Vec3 position;
   Vector3 velocity = Vector3.zero();
+
+  /// `Entity.setPos(x, y, z)`：整体替换（Vec3 不可变，原版同款）。
+  void setPos(double x, double y, double z) => position = Vec3(x, y, z);
+
+  Aabb get bounds => Aabb.player(position.x, position.y, position.z);
+
+  void applyMove(MoveResult r) {
+    setPos(r.centerX, r.minY, r.centerZ);
+  }
 
   /// 物品栏（原版 `player.getInventory()`；当前为最小实现——仅选中槽位，
   /// 判据 `Inventory.java:66-76/:130-132`，完整实现见翻译债 §8）。
@@ -28,12 +39,6 @@ class Player {
   double pitch;
 
   bool onGround = false;
-
-  Aabb get bounds => Aabb.player(position.x, position.y, position.z);
-
-  void applyMove(MoveResult r) {
-    position.setValues(r.centerX, r.minY, r.centerZ);
-  }
 
   /// 上一**刻**的脚底 y（渲染插值的起点）。
   ///
@@ -51,7 +56,10 @@ class Player {
 
   /// 渲染用的插值位置（脚底）。
   Vector3 get interpolatedPosition {
-    if (tickProgress <= 0) return position;
+    if (tickProgress <= 0) {
+      // 渲染边界：double → float32 只发生在这里（GPU 侧本就 float32）。
+      return Vector3(position.x, position.y, position.z);
+    }
     return Vector3(
       position.x,
       yOld + (position.y - yOld) * tickProgress,

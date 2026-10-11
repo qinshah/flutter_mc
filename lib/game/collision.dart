@@ -1,23 +1,50 @@
-import 'dart:math' as math;
+import 'dart:typed_data';
 
-/// 碰撞世界查询接口（app 壳内由 ClientWorld 实现；纯 Dart 可单测）。
+import 'package:mc_render/mc_render.dart';
+
+/// 碰撞世界查询接口（app 壳内由 SessionCollisionWorld 实现；纯 Dart 可单测）。
 abstract interface class CollisionWorld {
-  /// 该格是否阻挡实体（非空气/液体/十字植物）。
+  /// 该格的碰撞形状（`BlockStateBase.getCollisionShape` 对应物）；
+  /// 未加载/无碰撞返回 null（空气语义）。
+  VoxelShape? collisionShapeAt(int bx, int by, int bz);
+
+  /// 该格方块的摩擦（`BlockBehaviourProperties.friction`；判据
+  /// `travelInAir` 的 `blockFriction` 采样，LivingEntity.java:2451-2453）。
+  /// 未加载返回默认 0.6（与碰撞同口径：未加载 = 空气/常规地面）。
+  double blockFrictionAt(int bx, int by, int bz);
+
+  /// 该格的身份串（诊断穿透探针用；null = 未加载/无解析）。
+  String? blockIdentityAt(int bx, int by, int bz);
+
+  /// 该格是否阻挡（**仅射线等布尔场景用**；实体求解走 [collisionShapeAt]）。
   bool isCollidable(int bx, int by, int bz);
 
   /// 列 (cx, cz) 是否已加载。
   bool isColumnLoaded(int cx, int cz);
 
-  /// 世界高度（0..worldHeight）。
+  /// 世界高度。
   int get worldHeight;
 }
 
-/// 实体轴对齐包围盒（移植自 fscraft collision.dart）。宽 0.6 / 高 1.8，
-/// [position] 是盒子底面中心（原版实体的 posY 在脚底）。
+/// 实体轴对齐包围盒（宽 0.6 / 高 1.8，[centerX]/[centerZ] 是盒子底面中心，
+/// [minY] 是脚底——原版实体的 posY 在脚底）。
 class Aabb {
+  /// Java `float` 语义模拟：写入 Float32List 即按 float32 舍入，读出即
+  /// 拓宽回 double——等价于 Java 的 `(double)(float)v`。
+  static double _asF32(double v) => Float32List.fromList([v])[0];
+
+  /// 建盒语义 = `EntityDimensions.makeBoundingBox`（判据
+  /// EntityDimensions.java:19-22）：`width`/`height` 是 **float** 字段，
+  /// 半宽走 float 除法 `float w = this.width / 2.0F`，高度以 float 拓宽
+  /// 参与加法 `y + h`。故 0.6F 的半宽是 **0.30000001192092896** 而非
+  /// double 的 0.3，1.8F 是 1.7999999523162842 而非 1.8。
+  /// 差值 ~1.19e-8 不是数值噪声：客户端与服务器按同一 float 语义建盒，
+  /// 贴面时上报的中心坐标必须落在 float 半宽决定的阈值上
+  /// （241.0 + 0.30000001192092896），否则被服务器判为 CLIPPED_INTO_BLOCK
+  /// 回拉抽搐（docs/walk-jitter-diagnosis.md）。
   Aabb(this.centerX, this.minY, this.centerZ, double width, double height)
-      : halfWidth = width / 2,
-        maxY = minY + height;
+      : halfWidth = _asF32(width) / 2, // float w = width / 2.0F
+        maxY = minY + _asF32(height); // y + (float)height
 
   double centerX;
   double minY;
@@ -28,8 +55,10 @@ class Aabb {
 
   double get minX => centerX - halfWidth;
   double get x1 => centerX + halfWidth;
+  double get maxX => x1;
   double get minZ => centerZ - halfWidth;
   double get z1 => centerZ + halfWidth;
+  double get maxZ => z1;
 
   static const double eyeHeight = 1.62;
   static const double playerWidth = 0.6;
@@ -47,205 +76,160 @@ class Aabb {
       z1 > other.minZ;
 }
 
-/// 一次逐轴求解的结果。
+/// 一次碰撞求解的结果（判据 `Entity.collide`/`Entity.move`，Entity.java:1139-1146）。
 class MoveResult {
   const MoveResult({
     required this.centerX,
     required this.minY,
     required this.centerZ,
-    required this.hitX,
-    required this.hitY,
-    required this.hitZ,
-    required this.hasBlockBelow,
+    required this.xCollision,
+    required this.yCollision,
+    required this.zCollision,
   });
 
   final double centerX;
   final double minY;
   final double centerZ;
-  final bool hitX;
-  final bool hitY;
-  final bool hitZ;
-  final bool hasBlockBelow;
 
-  bool get onGround => hitY && hasBlockBelow;
+  /// `movement.x != movementStep.x` 等（Entity.java:1143-1145）。
+  final bool xCollision;
+  final bool yCollision;
+  final bool zCollision;
+
+  /// `yCollision && movement.y < 0.0`（Entity.java:1146 onGroundAfterCollision）。
+  bool onGroundOf(double movementY) => yCollision && movementY < 0;
 }
 
-/// 逐轴 AABB ↔ 体素网格碰撞求解（移植自 fscraft collision.dart）。
-///
-/// **联机构造必须 `unloadedPassable: true`**：原版客户端在未加载区可走，
-/// 掉落由服务器权威位置回拉纠正；否则视距边缘会出现隐形空气墙。
+/// 实体移动碰撞求解（判据 `Entity.collide` + `collideWithShapes`，
+/// Entity.java:1139-1263 + `Attributes.STEP_HEIGHT`，Attributes.java:98-99）。
 class VoxelCollision {
-  /// 贴地/贴墙时留的数值间隙。
-  ///
-  /// **判据 `AABB.EPSILON = 1.0E-7`**（`AABB.java:14`）—— 原版正是用这个量级
-  /// 让碰撞解算后不留穿透。早先用 `1e-4`（放大 1000 倍）⇒ 落地静止时脚底停在
-  /// `y = 0.0001` 而非 0，且贴墙时会离面 0.1 毫米。照抄原版量级。
   VoxelCollision(this.world, {this.epsilon = 1.0E-7, this.unloadedPassable = true});
 
   final CollisionWorld world;
+
+  /// 联机构造 `unloadedPassable: true`：未加载区按空气（原版客户端语义，
+  /// `ClientChunkCache.java:76` EmptyLevelChunk），掉落由服务器回拉纠正。
   final bool unloadedPassable;
+
+  /// `AABB.EPSILON`（AABB.java:14）。
   final double epsilon;
 
-  static const double _groundProbe = 0.1;
+  /// 玩家步高（判据 `Attributes.STEP_HEIGHT` 默认 0.6，Attributes.java:98-99；
+  /// 26.2 实体无载具/缓速项链场景，常量足够）。
+  static const double maxUpStep = 0.6;
 
-  MoveResult move(Aabb box, double dx, double dy, double dz) {
-    var x = box.centerX;
-    var y = box.minY;
-    var z = box.centerZ;
-    final height = box.maxY - box.minY;
-    final halfWidth = box.halfWidth;
+  /// `Entity.move(MoverType, Vec3)` 的碰撞半边：返回截停后的位移落点与
+  /// 各轴碰撞标志。[wasOnGround] = 原版 `this.onGround()`（step-up 条件之一）。
+  MoveResult move(Aabb box, double dx, double dy, double dz, {required bool wasOnGround}) {
+    final aabb = CollisionAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+    final colliders = _collectColliders(aabb.expandTowards(dx, dy, dz));
 
-    var hitX = false;
-    var hitY = false;
-    var hitZ = false;
+    // `collideWithShapes`（判据 J1，Entity.java:1249-1263）。
+    var (rx, ry, rz) = _collideWithShapes(dx, dy, dz, aabb, colliders);
+    final xCollision = rx != dx;
+    final yCollision = ry != dy;
+    final zCollision = rz != dz;
+    final onGroundAfterCollision = yCollision && dy < 0.0; // Entity.java:1146
 
-    if (dy > 0) {
-      final top = y + height;
-      for (var by = top.ceil(); by <= (top + dy).floor(); by++) {
-        if (_layerBlockedY(by, x, z, halfWidth)) {
-          y = by - height - epsilon;
-          hitY = true;
+    // 自动上步（判据 J2-J4，Entity.java:1144-1181）。
+    if (maxUpStep > 0.0 && (onGroundAfterCollision || wasOnGround) && (xCollision || zCollision)) {
+      final groundedAabb = onGroundAfterCollision ? aabb.move(0, ry, 0) : aabb;
+      var stepUpAabb = groundedAabb.expandTowards(dx, maxUpStep, dz);
+      if (!onGroundAfterCollision) {
+        stepUpAabb = stepUpAabb.expandTowards(0, -1.0E-5, 0); // Entity.java:1154-1155
+      }
+      final stepColliders = _collectColliders(stepUpAabb);
+      final candidates = _collectCandidateStepUpHeights(
+          groundedAabb, stepColliders, maxUpStep, ry); // Entity.java:1183-1197
+
+      for (final h in candidates) {
+        final (sx, sy, sz) = _collideWithShapes(dx, h, dz, groundedAabb, stepColliders);
+        if (sx * sx + sz * sz > rx * rx + rz * rz) {
+          final drop = aabb.minY - groundedAabb.minY; // Entity.java:1168-1170
+          rx = sx;
+          ry = sy - drop;
+          rz = sz;
           break;
         }
       }
-      if (!hitY) y += dy;
-    } else if (dy < 0) {
-      for (var by = y.floor(); by >= (y + dy).floor(); by--) {
-        if (_layerBlockedY(by, x, z, halfWidth)) {
-          y = by + 1.0 + epsilon;
-          hitY = true;
-          break;
-        }
-      }
-      if (!hitY) y += dy;
     }
 
-    if (dx > 0) {
-      final edge = x + halfWidth;
-      for (var bx = edge.ceil(); bx <= (edge + dx).floor(); bx++) {
-        if (_layerBlockedX(bx, y, z, height, halfWidth)) {
-          x = bx - halfWidth - epsilon;
-          hitX = true;
-          break;
-        }
-      }
-      if (!hitX) x += dx;
-    } else if (dx < 0) {
-      final edge = x - halfWidth;
-      for (var bx = edge.floor(); bx >= (edge + dx).floor(); bx--) {
-        if (_layerBlockedX(bx, y, z, height, halfWidth)) {
-          x = bx + 1.0 + halfWidth + epsilon;
-          hitX = true;
-          break;
-        }
-      }
-      if (!hitX) x += dx;
-    }
-
-    if (dz > 0) {
-      final edge = z + halfWidth;
-      for (var bz = edge.ceil(); bz <= (edge + dz).floor(); bz++) {
-        if (_layerBlockedZ(bz, x, y, halfWidth, height)) {
-          z = bz - halfWidth - epsilon;
-          hitZ = true;
-          break;
-        }
-      }
-      if (!hitZ) z += dz;
-    } else if (dz < 0) {
-      final edge = z - halfWidth;
-      for (var bz = edge.floor(); bz >= (edge + dz).floor(); bz--) {
-        if (_layerBlockedZ(bz, x, y, halfWidth, height)) {
-          z = bz + 1.0 + halfWidth + epsilon;
-          hitZ = true;
-          break;
-        }
-      }
-      if (!hitZ) z += dz;
-    }
-
-    final hasBlockBelow = dy > 0 ? false : _hasBlockBelow(x, y, z, halfWidth);
+    // 本帧着地状态由调用方按 `result.onGroundOf(dy)` 维护（vanilla 20Hz move
+    // 口径：着地只在竖直位移非零的结算点更新）。
 
     return MoveResult(
-      centerX: x,
-      minY: y,
-      centerZ: z,
-      hitX: hitX,
-      hitY: hitY,
-      hitZ: hitZ,
-      hasBlockBelow: hasBlockBelow,
+      centerX: box.centerX + rx,
+      minY: box.minY + ry,
+      centerZ: box.centerZ + rz,
+      xCollision: rx != dx,
+      yCollision: ry != dy,
+      zCollision: rz != dz,
     );
   }
 
-  bool _layerBlockedY(int by, double x, double z, double halfWidth) {
-    if (by < 0) return true;
-    if (by >= world.worldHeight) return false;
-    for (var bz = (z - halfWidth).floor();
-        bz <= (z + halfWidth - epsilon).floor();
-        bz++) {
-      for (var bx = (x - halfWidth).floor();
-          bx <= (x + halfWidth - epsilon).floor();
-          bx++) {
-        if (world.isCollidable(bx, by, bz)) return true;
+  /// `collideWithShapes`（Entity.java:1249-1263）：空 colliders 原样返回；
+  /// 按 `Direction.axisStepOrder`（Direction.java:379-381，|x|<|z| ⇒ YZX 否则
+  /// YXZ）逐轴 `Shapes.collide`，零分量轴跳过。
+  (double, double, double) _collideWithShapes(
+      double dx, double dy, double dz, CollisionAabb box, List<BlockBox> colliders) {
+    if (colliders.isEmpty) return (dx, dy, dz);
+    var (rx, ry, rz) = (0.0, 0.0, 0.0);
+    // Direction.java:379-381：Y 恒先；|x| < |z| ⇒ 后 Z 前 X，否则后 X 前 Z。
+    final yFirst = [1];
+    final rest = (dx.abs() < dz.abs()) ? [2, 0] : [0, 2];
+    for (final axis in [...yFirst, ...rest]) {
+      final m = axis == 0 ? dx : (axis == 1 ? dy : dz);
+      if (m == 0.0) continue; // Entity.java:1256
+      final resolved = collideAlongAxis(
+          box: box.move(rx, ry, rz), colliders: colliders, axis: axis, movement: m, epsilon: epsilon);
+      if (axis == 0) {
+        rx = resolved;
+      } else if (axis == 1) {
+        ry = resolved;
+      } else {
+        rz = resolved;
       }
     }
-    return false;
+    return (rx, ry, rz);
   }
 
-  bool _layerBlockedX(int bx, double y, double z, double height, double halfWidth) {
-    for (var by = y.floor(); by <= (y + height - epsilon).floor(); by++) {
-      if (by < 0) return true;
-      if (by >= world.worldHeight) continue;
-      for (var bz = (z - halfWidth).floor();
-          bz <= (z + halfWidth - epsilon).floor();
-          bz++) {
-        if (world.isCollidable(bx, by, bz)) return true;
+  /// `collectCandidateStepUpHeights`（Entity.java:1183-1197）：collider 的 Y
+  /// 坐标相对盒底 ∈ [0, maxUpStep] 且 != 已消化的 y 位移，升序去重。
+  List<double> _collectCandidateStepUpHeights(
+      CollisionAabb box, List<BlockBox> colliders, double maxStepHeight, double stepHeightToSkip) {
+    final candidates = <double>{};
+    for (final c in colliders) {
+      for (final coord in [c.minY, c.maxY]) {
+        final rel = coord - box.minY;
+        if (rel >= 0.0 && rel != stepHeightToSkip && rel <= maxStepHeight) {
+          candidates.add(rel);
+        }
       }
     }
-    return false;
+    final list = candidates.toList()..sort();
+    return list;
   }
 
-  bool _layerBlockedZ(int bz, double x, double y, double halfWidth, double height) {
-    for (var by = y.floor(); by <= (y + height - epsilon).floor(); by++) {
-      if (by < 0) return true;
-      if (by >= world.worldHeight) continue;
-      for (var bx = (x - halfWidth).floor();
-          bx <= (x + halfWidth - epsilon).floor();
-          bx++) {
-        if (world.isCollidable(bx, by, bz)) return true;
+  /// 扫掠区域内的全部碰撞盒（世界坐标）。
+  List<BlockBox> _collectColliders(CollisionAabb swept) {
+    final out = <BlockBox>[];
+    final bx0 = swept.minX.floor();
+    final bx1 = swept.maxX.floor();
+    final by0 = swept.minY.floor();
+    final by1 = swept.maxY.floor();
+    final bz0 = swept.minZ.floor();
+    final bz1 = swept.maxZ.floor();
+    for (var by = by0; by <= by1; by++) {
+      for (var bz = bz0; bz <= bz1; bz++) {
+        for (var bx = bx0; bx <= bx1; bx++) {
+          final shape = world.collisionShapeAt(bx, by, bz);
+          if (shape == null) continue;
+          for (final b in shape.boxes) {
+            out.add(BlockBox(b.minX + bx, b.minY + by, b.minZ + bz, b.maxX + bx, b.maxY + by, b.maxZ + bz));
+          }
+        }
       }
     }
-    return false;
+    return out;
   }
-
-  bool _hasBlockBelow(double cx, double y, double cz, double halfWidth) {
-    final by = (y - _groundProbe).floor();
-    if (by < 0) return true;
-    if (by >= world.worldHeight) return false;
-    final x0 = (cx - halfWidth).floor();
-    final x1 = (cx + halfWidth - epsilon).floor();
-    final z0 = (cz - halfWidth).floor();
-    final z1 = (cz + halfWidth - epsilon).floor();
-    for (var bz = z0; bz <= z1; bz++) {
-      for (var bx = x0; bx <= x1; bx++) {
-        if (world.isCollidable(bx, by, bz)) return true;
-      }
-    }
-    return false;
-  }
-}
-
-/// 高速移动按轴拆步（隧穿防护）。
-List<List<double>> substeps(double dx, double dy, double dz,
-    {double maxStep = 0.4}) {
-  final maxLen = math.max(dx.abs(), math.max(dy.abs(), dz.abs()));
-  if (maxLen <= maxStep) {
-    return [
-      [dx, dy, dz]
-    ];
-  }
-  final n = (maxLen / maxStep).ceil();
-  return [
-    for (var i = 0; i < n; i++) [dx / n, dy / n, dz / n]
-  ];
 }

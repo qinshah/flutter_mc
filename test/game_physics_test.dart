@@ -1,9 +1,11 @@
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mc_render/mc_render.dart';
 import 'package:vector_math/vector_math.dart';
 
 import 'package:flutter_mc/game/collision.dart';
+import 'package:flutter_mc/world/phys/vec3.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
 
 // ---------------------------------------------------------------------------
@@ -26,9 +28,6 @@ const int _floorBlockY = 63;
 const double _standY = _floorTopY + _epsilon;
 
 /// LivingEntity.DEFAULT_BASE_GRAVITY = 0.08（格/刻²）。
-///
-/// 重力积分本身不在 collision.dart / player.dart 里（那两处只管几何求解与
-/// 玩家状态），它属于呼叫方的移动循环；因此测试自行按原版常量积分。
 const double _gravity = 0.08;
 
 /// LivingEntity.BASE_JUMP_POWER = 0.42（格/刻）。
@@ -41,6 +40,7 @@ const double _jumpPower = 0.42;
 const double _f32Tol = 1e-4;
 
 /// 假的世界查询：用 `Map<(bx,by,bz), bool>` 记录"哪一格是实心"（缺省 = 空气）。
+/// 实心格的碰撞形状 = 整块立方体（`Shapes.block()`）。
 class _FakeWorld implements CollisionWorld {
   _FakeWorld({this.worldHeight = 384});
 
@@ -49,11 +49,11 @@ class _FakeWorld implements CollisionWorld {
 
   final Map<(int, int, int), bool> _blocks = {};
 
-  /// isCollidable 被查询的次数。
-  int collidableQueries = 0;
+  /// collisionShapeAt 被查询的次数。
+  int shapeQueries = 0;
 
-  /// isColumnLoaded 被查询的次数（当前求解从不查询，见"记录语义"用例）。
-  int columnLoadedQueries = 0;
+  /// isCollidable 被查询的次数（实体求解不再用它——仅射线等布尔场景）。
+  int collidableQueries = 0;
 
   void setSolid(int bx, int by, int bz, [bool solid = true]) {
     _blocks[(bx, by, bz)] = solid;
@@ -75,6 +75,17 @@ class _FakeWorld implements CollisionWorld {
   }
 
   @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) {
+    shapeQueries++;
+    if (by < 0 || by >= worldHeight) return null;
+    return (_blocks[(bx, by, bz)] ?? false) ? VoxelShape.full() : null;
+  }
+  @override
+  double blockFrictionAt(int bx, int by, int bz) => 0.6;
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) => null;
+
+  @override
   bool isCollidable(int bx, int by, int bz) {
     collidableQueries++;
     if (by < 0 || by >= worldHeight) return false;
@@ -82,16 +93,13 @@ class _FakeWorld implements CollisionWorld {
   }
 
   @override
-  bool isColumnLoaded(int cx, int cz) {
-    columnLoadedQueries++;
-    return true;
-  }
+  bool isColumnLoaded(int cx, int cz) => true;
 }
 
-/// 平坦地板世界：仅 `_floorBlockY` 一层实心，±8 格范围。
+/// 平地世界：地板铺在 `_floorBlockY`（顶面 y=64），范围 ±8。
 _FakeWorld _flatWorld() {
-  final world = _FakeWorld();
-  world.fillLayer(_floorBlockY, minX: -8, maxX: 8, minZ: -8, maxZ: 8);
+  final world = _FakeWorld()
+    ..fillLayer(_floorBlockY, minX: -8, maxX: 8, minZ: -8, maxZ: 8);
   return world;
 }
 
@@ -103,19 +111,24 @@ void main() {
   test('AABB 常量：玩家宽 0.6 / 高 1.8 / 眼睛高 1.62', () {
     // 原版依据：EntityTypes 玩家 sized(0.6F, 1.8F)，
     // Avatar.DEFAULT_EYE_HEIGHT = 1.62F（Entity.java 用 position.y + eyeHeight）。
+    // 建盒 float 语义（EntityDimensions.java:19-22）：width/height 是 float，
+    // 半宽 = float32(0.6)/2 = 0.30000001192092896（非 double 0.3），
+    // 头顶 = y + float32(1.8) = y + 1.7999999523162842（非 1.8）。
+    const f32HalfWidth = 0.30000001192092896;
+    const f32Height = 1.7999999523162842;
     expect(Aabb.playerWidth, 0.6);
     expect(Aabb.playerHeight, 1.8);
     expect(Aabb.eyeHeight, 1.62);
 
     final box = Aabb.player(1, 64, 2);
-    expect(box.halfWidth, closeTo(0.3, 1e-12));
-    expect(box.minX, closeTo(0.7, 1e-12));
-    expect(box.x1, closeTo(1.3, 1e-12));
-    expect(box.minZ, closeTo(1.7, 1e-12));
-    expect(box.z1, closeTo(2.3, 1e-12));
+    expect(box.halfWidth, f32HalfWidth);
+    expect(box.minX, closeTo(1.0 - f32HalfWidth, 1e-15));
+    expect(box.x1, closeTo(1.0 + f32HalfWidth, 1e-15));
+    expect(box.minZ, closeTo(2.0 - f32HalfWidth, 1e-15));
+    expect(box.z1, closeTo(2.0 + f32HalfWidth, 1e-15));
     // [minY] 是脚底，[maxY] 是头顶。
     expect(box.minY, 64.0);
-    expect(box.maxY, closeTo(64.0 + 1.8, 1e-12));
+    expect(box.maxY, closeTo(64.0 + f32Height, 1e-15));
   });
 
   test('Aabb.intersects：相交为真，仅贴面/仅同层不接触为假', () {
@@ -141,62 +154,46 @@ void main() {
     expect(Aabb(0.4, 0.5, 0.4, 1, 1).intersects(base), isTrue);
   });
 
-  test('MoveResult.onGround = hitY && hasBlockBelow', () {
+  test('MoveResult.onGroundOf = yCollision && movementY < 0（Entity.java:1146）', () {
     const grounded = MoveResult(
       centerX: 0,
       minY: 64,
       centerZ: 0,
-      hitX: false,
-      hitY: true,
-      hitZ: false,
-      hasBlockBelow: true,
+      xCollision: false,
+      yCollision: true,
+      zCollision: false,
     );
-    expect(grounded.onGround, isTrue);
+    expect(grounded.onGroundOf(-0.08), isTrue);
+    expect(grounded.onGroundOf(0.08), isFalse, reason: '向上顶头不是着地');
     expect(
       const MoveResult(
         centerX: 0,
         minY: 64,
         centerZ: 0,
-        hitX: false,
-        hitY: false,
-        hitZ: false,
-        hasBlockBelow: true,
-      ).onGround,
+        xCollision: false,
+        yCollision: false,
+        zCollision: false,
+      ).onGroundOf(-0.08),
       isFalse,
-      reason: '有支撑但本刻没发生竖直碰撞 → 不算着地',
     );
-    expect(
-      const MoveResult(
-        centerX: 0,
-        minY: 64,
-        centerZ: 0,
-        hitX: false,
-        hitY: true,
-        hitZ: false,
-        hasBlockBelow: false,
-      ).onGround,
-      isFalse,
-      reason: '竖直撞了但不是向下撞出的支撑',
-    );
+    expect(grounded.onGroundOf(0), isFalse, reason: 'dy=0 不产生着地判定（调用方保持上一状态）');
   });
 
   // -------------------------------------------------------------------------
   // 2. 自由下落
   // -------------------------------------------------------------------------
 
-  test('自由下落：无地面时受重力，y 逐刻递减且 onGround 为假', () {
+  test('自由下落：无地面时受重力，y 逐刻递减且无竖直碰撞', () {
     final collision = VoxelCollision(_FakeWorld()); // 空世界
-    final player = Player(position: Vector3(0.5, 70.0, 0.5));
+    final player = Player(position: const Vec3(0.5, 70.0, 0.5));
 
     var vy = 0.0;
     var previousY = player.position.y;
     for (var tick = 0; tick < 10; tick++) {
       vy -= _gravity;
-      final r = collision.move(player.bounds, 0, vy, 0);
+      final r = collision.move(player.bounds, 0, vy, 0, wasOnGround: false);
 
-      expect(r.hitY, isFalse, reason: '空世界里不该撞到任何东西');
-      expect(r.hasBlockBelow, isFalse, reason: '脚下没有实心方块');
-      expect(r.onGround, isFalse);
+      expect(r.yCollision, isFalse, reason: '空世界里不该撞到任何东西');
       player.applyMove(r);
       expect(
         player.position.y,
@@ -212,34 +209,41 @@ void main() {
     expect(player.position.z, 0.5);
   });
 
-  test('自由下落：落到方块顶面后停住，onGround 为真', () {
+  test('自由下落：落到方块顶面后停住，onGround 为真且稳定', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, 70.0, 0.5));
+    final player = Player(position: const Vec3(0.5, 70.0, 0.5));
 
     var vy = 0.0;
     MoveResult? last;
     var landed = false;
     for (var tick = 0; tick < 100 && !landed; tick++) {
       vy -= _gravity;
-      last = collision.move(player.bounds, 0, vy, 0);
-      if (last.onGround) vy = 0; // 落地竖直速度清零（呼叫方职责）
+      last = collision.move(player.bounds, 0, vy, 0, wasOnGround: player.onGround);
+      player.onGround = last.onGroundOf(vy);
       player.applyMove(last);
-      landed = last.onGround;
+      landed = player.onGround;
     }
 
     expect(landed, isTrue, reason: '100 刻内应当落地');
-    expect(last!.hitY, isTrue);
-    expect(last.hasBlockBelow, isTrue);
-    expect(last.onGround, isTrue);
+    expect(last!.yCollision, isTrue);
+    expect(last.onGroundOf(vy), isTrue);
     // 停在方块顶面 + epsilon（写回 float32 位置，容差放宽到 float32）。
     expect(player.position.y, closeTo(_standY, _f32Tol));
     expect(player.position.y, greaterThanOrEqualTo(_floorTopY));
 
-    // 再推一刻重力仍然停在同一高度（不穿地、不抖动）。
-    final rest = collision.move(player.bounds, 0, -_gravity, 0);
-    expect(rest.hitY, isTrue);
-    expect(rest.minY, closeTo(_standY, 1e-12));
-    expect(rest.onGround, isTrue);
+    // 再推一刻重力仍然停在同一高度（不穿地、不抖动——原版口径：重力持续
+    // 作用、被地面截停，截停后每刻位移归零，位置稳定）。
+    final rest = collision.move(player.bounds, 0, -_gravity, 0, wasOnGround: true);
+    expect(rest.yCollision, isTrue);
+    expect(rest.minY, closeTo(_floorTopY, 1e-12));
+    expect(rest.onGroundOf(-_gravity), isTrue);
+
+    // 连续推 100 刻位置逐刻相同（抽搐回归：无探针闪烁）。
+    for (var i = 0; i < 100; i++) {
+      final r = collision.move(player.bounds, 0, -_gravity, 0, wasOnGround: true);
+      expect(r.minY, _floorTopY, reason: '第 $i 刻位置不得变化');
+      expect(r.onGroundOf(-_gravity), isTrue);
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -248,30 +252,28 @@ void main() {
 
   test('跳跃：起跳初速度使 y 上升，随后回落并重新落地', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, _standY, 0.5));
+    final player = Player(position: const Vec3(0.5, _standY, 0.5));
 
-    // 位置存的是 float32，先记下实际静止高度，后续期望值都基于它算。
     final startY = player.position.y;
     expect(startY, closeTo(_standY, _f32Tol));
 
     // 起跳：一拍 0.42 格/刻的向上位移。
     var vy = _jumpPower;
-    var r = collision.move(player.bounds, 0, vy, 0);
-    expect(r.hitY, isFalse);
+    var r = collision.move(player.bounds, 0, vy, 0, wasOnGround: true);
+    expect(r.yCollision, isFalse);
     expect(player.position.y, startY, reason: '求解不写回玩家，applyMove 之前位置不变');
     expect(r.minY, closeTo(startY + _jumpPower, 1e-9), reason: 'y 上升 0.42');
-    expect(r.onGround, isFalse, reason: '上升中 hasBlockBelow 被强制为假');
     player.applyMove(r);
     var peak = player.position.y;
 
     var landed = false;
     for (var tick = 0; tick < 100 && !landed; tick++) {
       vy -= _gravity;
-      r = collision.move(player.bounds, 0, vy, 0);
-      if (r.onGround) vy = 0;
+      r = collision.move(player.bounds, 0, vy, 0, wasOnGround: player.onGround);
+      player.onGround = r.onGroundOf(vy);
       player.applyMove(r);
       if (player.position.y > peak) peak = player.position.y;
-      landed = r.onGround;
+      landed = player.onGround;
     }
 
     expect(landed, isTrue, reason: '跳起后必须落回地面');
@@ -282,16 +284,17 @@ void main() {
 
   test('起跳后立刻受重力：第二拍位移已小于起跳初速度', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, _standY, 0.5));
+    final player = Player(position: const Vec3(0.5, _standY, 0.5));
     final startY = player.position.y;
     var vy = _jumpPower - _gravity; // 0.34
-    final r = collision.move(player.bounds, 0, vy, 0);
+    final r = collision.move(player.bounds, 0, vy, 0, wasOnGround: false);
     expect(r.minY, closeTo(startY + 0.34, 1e-9));
     expect(r.minY, lessThan(startY + _jumpPower));
   });
 
   // -------------------------------------------------------------------------
-  // 4. 水平撞墙与逐轴求解顺序
+  // 4. 水平撞墙与逐轴求解顺序（判据 Direction.axisStepOrder，
+  //    Direction.java:379-381：|x| < |z| ⇒ YZX，否则 YXZ）
   // -------------------------------------------------------------------------
 
   test('撞墙：贴墙轴位移被吃掉，另一轴仍可动', () {
@@ -300,39 +303,60 @@ void main() {
     world.fillLayer(64, minX: 5, maxX: 5, minZ: -8, maxZ: 8);
     world.fillLayer(65, minX: 5, maxX: 5, minZ: -8, maxZ: 8);
     final collision = VoxelCollision(world);
-    final player = Player(position: Vector3(4.0, _standY, 0.5));
+    final player = Player(position: const Vec3(4.0, _standY, 0.5));
 
     // 斜着往墙里撞：+X 撞墙、+Z 是空地，同时带一刻重力保持贴地。
-    final r = collision.move(player.bounds, 1.0, -_gravity, 0.5);
+    final r = collision.move(player.bounds, 1.0, -_gravity, 0.5, wasOnGround: true);
 
-    expect(r.hitX, isTrue, reason: '+X 被墙挡住');
-    expect(r.hitZ, isFalse, reason: '+Z 没有障碍');
-    // x 被推到墙面外侧：面 x=5.0 − 半宽 0.3 − epsilon。
-    expect(r.centerX, closeTo(5.0 - 0.3 - _epsilon, 1e-9));
-    expect(r.centerX + 0.3, lessThan(5.0), reason: '玩家盒不得进入墙体');
+    expect(r.xCollision, isTrue, reason: '+X 被墙挡住');
+    expect(r.zCollision, isFalse, reason: '+Z 没有障碍');
+    // x 被截到墙面外侧：面 x=5.0 − float32(0.6)/2 = 4.699999988079071
+    // （EntityDimensions.java:20：float w = width / 2.0F）。
+    const f32HalfWidth = 0.30000001192092896;
+    expect(r.centerX, closeTo(5.0 - f32HalfWidth, 1e-15));
+    expect(r.centerX + f32HalfWidth, lessThanOrEqualTo(5.0),
+        reason: '玩家盒不得进入墙体（贴面=接触，vanilla 语义）');
     // z 轴位移照常走完（另一轴仍可动）。
     expect(r.centerZ, closeTo(1.0, 1e-9));
     // 竖直方向贴地，没有漂移。
-    expect(r.minY, closeTo(_standY, 1e-12));
-    expect(r.onGround, isTrue);
+    expect(r.minY, closeTo(_floorTopY, 1e-12));
+    expect(r.onGroundOf(-_gravity), isTrue);
   });
 
-  test('逐轴顺序 Y→X→Z：Z 轴用 X 求解后的新位置判碰撞', () {
+  test('逐轴顺序 axisStepOrder：|dx| < |dz| ⇒ YZX（Z 先解，X 用新 z 复查）', () {
     final world = _flatWorld();
     world.setSolid(5, 64, 1); // 单格柱子，只在 bx=5、bz=1 挡路
     final collision = VoxelCollision(world);
-    final player = Player(position: Vector3(4.0, _standY, 0.5));
+    final player = Player(position: const Vec3(4.0, _standY, 0.5));
 
-    final r = collision.move(player.bounds, 1.0, -_gravity, 1.0);
+    // |dx| = 0.8 < |dz| = 1.0 ⇒ 原版选 YZX（Y → Z → X）。
+    final r = collision.move(player.bounds, 0.8, -_gravity, 1.0, wasOnGround: true);
 
-    // X 先解：出发时 z∈[0.2,0.8] 只看 bz=0，柱子不在这一列 → x 走满到 5.0。
-    expect(r.hitX, isFalse);
+    // Z 先解：出发时 x∈[3.7,4.3] 不覆盖柱子 bx=5 → z 走满到 2.0。
+    expect(r.zCollision, isFalse);
+    expect(r.centerZ, closeTo(1.5, 1e-9));
+    // X 后解：用 z∈[1.2,1.8] 复查覆盖 bz=1 → 撞上柱子，
+    // x 位移被截到 5.0 − float32(0.6)/2（EntityDimensions.java:20）。
+    expect(r.xCollision, isTrue);
+    expect(r.centerX, closeTo(5.0 - 0.30000001192092896, 1e-15));
+    expect(r.minY, closeTo(_floorTopY, 1e-12), reason: '竖直轴最先解，不受水平影响');
+  });
+
+  test('逐轴顺序 axisStepOrder：|dx| > |dz| ⇒ YXZ（X 先解，Z 用新 x 复查）', () {
+    final world = _flatWorld();
+    world.setSolid(5, 64, 1); // 单格柱子 (x=5, z=1)
+    final collision = VoxelCollision(world);
+    final player = Player(position: const Vec3(4.0, _standY, 0.5));
+
+    // |dx| = 1.0 > |dz| = 0.8 ⇒ 原版选 YXZ（Y → X → Z）。
+    final r = collision.move(player.bounds, 1.0, -_gravity, 0.8, wasOnGround: true);
+
+    // X 先解：bz=0 没柱子 → x 走满到 5.0；Z 后解用 x=5.0 复查撞柱子。
+    expect(r.xCollision, isFalse);
     expect(r.centerX, closeTo(5.0, 1e-9));
-    // Z 后解：用 x=5.0 复查时会覆盖 bx=5 → 撞上柱子，z 位移被吃掉。
-    // （若顺序反过来先解 Z，x=4.0 时只查 bx=3，z 会一路走完 1.5。）
-    expect(r.hitZ, isTrue);
-    expect(r.centerZ, closeTo(1.0 - 0.3 - _epsilon, 1e-9));
-    expect(r.minY, closeTo(_standY, 1e-12), reason: '竖直轴最先解，不受水平影响');
+    expect(r.zCollision, isTrue);
+    // 截到 1.0 − float32(0.6)/2 = 0.699999988079071（EntityDimensions.java:20）。
+    expect(r.centerZ, closeTo(1.0 - 0.30000001192092896, 1e-15));
   });
 
   // -------------------------------------------------------------------------
@@ -341,52 +365,45 @@ void main() {
 
   test('贴地水平移动：脚在方块上时竖直位置不漂移', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, _standY, 0.5));
+    final player = Player(position: const Vec3(0.5, _standY, 0.5));
 
-    final r = collision.move(player.bounds, 0.25, -_gravity, 0.25);
+    final r = collision.move(player.bounds, 0.25, -_gravity, 0.25, wasOnGround: true);
     player.applyMove(r);
 
-    expect(r.hitX, isFalse);
-    expect(r.hitZ, isFalse);
-    expect(r.hitY, isTrue, reason: '重力下探到地面');
-    expect(r.minY, closeTo(_standY, 1e-12), reason: '贴地走不产生竖直漂移');
-    expect(r.hasBlockBelow, isTrue);
-    expect(r.onGround, isTrue);
+    expect(r.xCollision, isFalse);
+    expect(r.zCollision, isFalse);
+    expect(r.yCollision, isTrue, reason: '重力下探到地面');
+    expect(r.minY, closeTo(_floorTopY, 1e-12), reason: '贴地走不产生竖直漂移');
+    expect(r.onGroundOf(-_gravity), isTrue);
     expect(r.centerX, closeTo(0.75, 1e-9));
     expect(r.centerZ, closeTo(0.75, 1e-9));
     expect(player.position.y, closeTo(_standY, _f32Tol));
   });
 
-  test('记录语义：贴地但 dy=0 时 onGround 为假（见报告可疑点 1）', () {
+  test('dy=0：onGroundOf 为假，由调用方保持上一状态（vanilla 20Hz 口径）', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, _standY, 0.5));
+    final player = Player(position: const Vec3(0.5, _standY, 0.5));
 
-    final r = collision.move(player.bounds, 0.25, 0, 0);
+    final r = collision.move(player.bounds, 0.25, 0, 0, wasOnGround: true);
 
-    expect(r.hasBlockBelow, isTrue, reason: '脚下确实是实心方块');
-    expect(r.hitY, isFalse, reason: 'dy=0 时竖直分支整体不执行，hitY 保持初值 false');
-    expect(r.onGround, isFalse, reason: 'onGround = hitY && hasBlockBelow');
-    // 水平移动不受影响。
+    // dy=0：竖直分支无碰撞；onGround 语义由调用方保持（local_player 只在
+    // dy != 0 的结算点更新——站立时每刻重力给出 dy<0，onGround 稳定）。
+    expect(r.yCollision, isFalse);
+    expect(r.onGroundOf(0), isFalse);
     expect(r.centerX, closeTo(0.75, 1e-9));
     expect(r.minY, player.position.y, reason: 'dy=0 时 y 原样返回（float32 位置照抄）');
   });
 
-  test(
-    '记录语义：求解只查 isCollidable；isColumnLoaded/unloadedPassable 目前是死参数（待对齐原版未加载区语义）',
-    () {
-      final world = _FakeWorld();
-      // 玩家脚底中心 (0.5, 64, 0.5) 占 x∈[0.2,0.8]；墙要放**下一格** x∈[1,2)
-      // 才是"正前方"。放在 (0,...) 是玩家已经站进去的那一格，求解器不处理初始重叠。
-      world.setSolid(1, 64, 0);
-      final collision = VoxelCollision(world, unloadedPassable: false);
+  test('实体求解只查 collisionShapeAt（isCollidable 已不属于求解路径）', () {
+    final world = _FakeWorld();
+    world.setSolid(1, 64, 0);
+    final collision = VoxelCollision(world, unloadedPassable: false);
 
-      final r = collision.move(Aabb.player(0.5, 64.0, 0.5), 1.0, 0, 0);
+    final r = collision.move(Aabb.player(0.5, 64.0, 0.5), 1.0, 0, 0, wasOnGround: false);
 
-      expect(r.hitX, isTrue, reason: '同一条查询路径照常判碰撞');
-      expect(world.collidableQueries, greaterThan(0));
-      expect(world.columnLoadedQueries, 0, reason: '当前实现从不查询列加载状态');
-    },
-  );
+    expect(r.xCollision, isTrue, reason: '同一条形状查询路径照常判碰撞');
+    expect(world.shapeQueries, greaterThan(0));
+  });
 
   // -------------------------------------------------------------------------
   // 6. 玩家 look
@@ -471,9 +488,7 @@ void main() {
     expect(d.length, closeTo(1, 1e-6));
 
     player.pitch = math.pi / 2; // 正 pitch 向下
-    d = player.lookDirection;
-    expect(d.y, closeTo(-1, 1e-6), reason: 'pitch=+π/2 → 视线朝下');
-    expect(d.length, closeTo(1, 1e-6));
+    expect(player.lookDirection.y, closeTo(-1, 1e-6), reason: 'pitch=+π/2 → 视线朝下');
 
     // 钳制范围内的任意角度都是单位向量（float32 存储，容差 1e-6）。
     for (final yaw in [0.0, 0.7, -2.3, 3.1]) {
@@ -485,7 +500,7 @@ void main() {
   });
 
   test('eyePosition：在脚底之上 1.62 格（float32 向量，容差 1e-4）', () {
-    final player = Player(position: Vector3(1, 64, 2));
+    final player = Player(position: const Vec3(1, 64, 2));
     expect(player.eyePosition.x, 1.0);
     expect(player.eyePosition.y, closeTo(64 + Aabb.eyeHeight, _f32Tol));
     expect(player.eyePosition.z, 2.0);
@@ -498,15 +513,15 @@ void main() {
 
   test('applyMove：位置落到 minY/centerX/centerZ（脚底中心语义）', () {
     final collision = VoxelCollision(_flatWorld());
-    final player = Player(position: Vector3(0.5, 70.0, 0.5));
+    final player = Player(position: const Vec3(0.5, 70.0, 0.5));
 
-    final r = collision.move(player.bounds, 0.25, -_gravity, -0.25);
+    final r = collision.move(player.bounds, 0.25, -_gravity, -0.25, wasOnGround: false);
     // 求解本身不改玩家。
-    expect(player.position, Vector3(0.5, 70.0, 0.5));
+    expect(player.position.x, 0.5);
+    expect(player.position.y, 70.0);
+    expect(player.position.z, 0.5);
     player.applyMove(r);
 
-    // 位置写回 float32 的 Vector3，所以逐轴按 float32 容差比较
-    // （x/z 这两个值本身能被 float32 精确表示，y 不能）。
     expect(player.position.x, closeTo(r.centerX, _f32Tol));
     expect(player.position.y, closeTo(r.minY, _f32Tol));
     expect(player.position.z, closeTo(r.centerZ, _f32Tol));
@@ -532,139 +547,79 @@ void main() {
     final box = Aabb.player(0.5, _standY, 0.5);
     final before = [box.centerX, box.minY, box.centerZ, box.maxY];
 
-    collision.move(box, 0.3, -_gravity, 0.3);
+    collision.move(box, 0.3, -_gravity, 0.3, wasOnGround: true);
 
     expect([box.centerX, box.minY, box.centerZ, box.maxY], before);
   });
 
   // -------------------------------------------------------------------------
-  // 8. 隧穿防护（substeps）
+  // 8. 世界边界（vanilla 无隐形地板/天花板：虚空下落由服务器 clampVertical 兜底）
   // -------------------------------------------------------------------------
 
-  test('substeps：小位移一步，大位移按最长轴拆步且总和不变', () {
-    final small = substeps(0.1, -0.2, 0.3);
-    expect(small, hasLength(1));
-    expect(small.single[0], 0.1);
-    expect(small.single[1], -0.2);
-    expect(small.single[2], 0.3);
-
-    final steps = substeps(1.0, 0, -0.2);
-    expect(steps, hasLength(3), reason: 'ceil(1.0 / 0.4) = 3');
-    var sx = 0.0;
-    var sy = 0.0;
-    var sz = 0.0;
-    for (final s in steps) {
-      expect(s[0].abs(), lessThanOrEqualTo(0.4 + 1e-12));
-      expect(s[1].abs(), lessThanOrEqualTo(0.4 + 1e-12));
-      expect(s[2].abs(), lessThanOrEqualTo(0.4 + 1e-12));
-      sx += s[0];
-      sy += s[1];
-      sz += s[2];
-    }
-    expect(sx, closeTo(1.0, 1e-12));
-    expect(sy, closeTo(0.0, 1e-12));
-    expect(sz, closeTo(-0.2, 1e-12));
-
-    // 只按最长轴决定步数：竖直大位移同样拆步。
-    expect(substeps(0, -1.2, 0), hasLength(3));
-    expect(substeps(0, 0.4, 0), hasLength(1), reason: '恰好等于 maxStep 不拆');
-  });
-
-  // -------------------------------------------------------------------------
-  // 9. 世界边界
-  // -------------------------------------------------------------------------
-
-  test('世界底部（by < 0）视为阻挡：不会掉出世界', () {
+  test('世界底部以下为虚空：无隐形地板，自由下落穿行（vanilla 语义）', () {
     final collision = VoxelCollision(_FakeWorld());
-    final player = Player(position: Vector3(0.5, 3.0, 0.5));
+    final player = Player(position: const Vec3(0.5, 3.0, 0.5));
 
-    final r = collision.move(player.bounds, 0, -10.0, 0);
+    final r = collision.move(player.bounds, 0, -10.0, 0, wasOnGround: false);
 
-    expect(r.hitY, isTrue);
-    // 向下分支把 by<0 当实心层处理：y = by + 1 + epsilon = -1 + 1 + epsilon，
-    // 也就是"有效地面顶面在 y=0"（见报告可疑点 4）。
-    expect(r.minY, closeTo(_epsilon, 1e-9));
-    expect(r.onGround, isTrue);
+    expect(r.yCollision, isFalse, reason: 'y<0 无任何碰撞形状');
+    expect(r.minY, closeTo(-7.0, 1e-9), reason: '位移原样走完（服务器 clampVertical 兜底）');
   });
 
-  test('世界顶部（by >= worldHeight）不阻挡：跳起不会被天花板意外卡住', () {
-    // 用一个矮世界（高 80）把玩家放到贴顶位置。
+  test('世界顶部以上无碰撞形状：不会被天花板意外卡住', () {
     final world = _FakeWorld(worldHeight: 80)
       ..fillLayer(_floorBlockY, minX: -8, maxX: 8, minZ: -8, maxZ: 8);
     final collision = VoxelCollision(world);
 
-    // 贴顶时向上推：_layerBlockedY 在 by >= worldHeight 返回 false。
-    final high = Player(position: Vector3(0.5, 79.0, 0.5));
-    final r = collision.move(high.bounds, 0, 0.5, 0);
-    expect(r.hitY, isFalse);
+    final high = Player(position: const Vec3(0.5, 79.0, 0.5));
+    final r = collision.move(high.bounds, 0, 0.5, 0, wasOnGround: false);
+    expect(r.yCollision, isFalse);
     expect(r.minY, closeTo(79.5, 1e-9));
 
     // 对照：同一个世界里的地板仍然正常判碰撞。
-    final standing = Player(position: Vector3(0.5, _standY, 0.5));
-    expect(collision.move(standing.bounds, 0, -_gravity, 0).hitY, isTrue);
+    final standing = Player(position: const Vec3(0.5, _standY, 0.5));
+    expect(
+      collision.move(standing.bounds, 0, -_gravity, 0, wasOnGround: true).yCollision,
+      isTrue,
+    );
   });
 
   // -------------------------------------------------------------------------
-  // 10. 水平边界：走上方块边缘
+  // 9. 走下方块边缘（vanilla：Y 先解用移动前位置判地，下一拍才下落）
   // -------------------------------------------------------------------------
 
-  test('走下平台边缘：竖直轴先用移动前的 x 判定，下一拍才下落', () {
+  test('走下平台边缘：第一拍仍判到脚下平台（Y 先解），下一拍开始下落', () {
     final world = _FakeWorld();
     // 只铺 x∈[-8,0] 的地板，玩家从边缘走出去。
     world.fillLayer(_floorBlockY, minX: -8, maxX: 0, minZ: -8, maxZ: 8);
     final collision = VoxelCollision(world);
-    final player = Player(position: Vector3(0.5, _standY, 0.5));
+    final player = Player(position: const Vec3(0.5, _standY, 0.5));
 
-    // 第一拍：还在平台上（x∈[0.2,0.8] 覆盖 bx=0）。
-    final onPlate = collision.move(player.bounds, 0, -_gravity, 0);
-    expect(onPlate.hitY, isTrue);
-    expect(onPlate.onGround, isTrue);
+    // 第一拍：还在平台上。
+    final onPlate = collision.move(player.bounds, 0, -_gravity, 0, wasOnGround: true);
+    expect(onPlate.yCollision, isTrue);
+    expect(onPlate.onGroundOf(-_gravity), isTrue);
     player.applyMove(onPlate);
 
-    // 第二拍：水平走出平台。Y 轴最先解、用的是移动前的 x=0.5，
-    // 所以这一拍仍判到脚下的方块；hasBlockBelow 却用移动后的 x=1.5，
-    // 于是 hitY 真、hasBlockBelow 假 → onGround 假（竖直/水平判定基准不同）。
-    final offPlate = collision.move(player.bounds, 1.0, -_gravity, 0);
+    // 第二拍：水平走出平台。colliders 按 expandTowards 一次收集（含新旧两处），
+    // Y 先解时 box 还在旧 x（覆盖 bx=0）→ 仍判到平台，截停竖直位移；
+    // 随后 X 走满走出平台。onGround = true（yCollision && dy<0）。
+    final offPlate = collision.move(player.bounds, 1.0, -_gravity, 0, wasOnGround: true);
     expect(offPlate.centerX, closeTo(1.5, 1e-9));
-    expect(offPlate.hitX, isFalse);
-    expect(offPlate.hitY, isTrue, reason: 'Y 轴用移动前的 x=0.5 判到了脚下方块');
-    expect(
-      offPlate.hasBlockBelow,
-      isFalse,
-      reason: 'hasBlockBelow 用移动后的 x=1.5：脚下已悬空',
-    );
-    expect(offPlate.onGround, isFalse);
-    expect(offPlate.minY, closeTo(_standY, 1e-12), reason: '这一拍还没开始掉');
+    expect(offPlate.xCollision, isFalse);
+    expect(offPlate.yCollision, isTrue, reason: 'Y 先解：平台仍在盒正下方（旧 x）');
+    expect(offPlate.onGroundOf(-_gravity), isTrue);
+    expect(offPlate.minY, closeTo(_floorTopY, 1e-12), reason: '这一拍还没开始掉');
     player.applyMove(offPlate);
 
-    // 第三拍：仍然没有支撑，开始下落（起点是 float32 写回后的高度）。
-    final falling = collision.move(player.bounds, 0, -_gravity, 0);
-    expect(falling.hitY, isFalse);
-    expect(falling.onGround, isFalse);
+    // 第三拍：盒已完全离开平台 → 无支撑，开始下落。
+    final falling = collision.move(player.bounds, 0, -_gravity, 0, wasOnGround: true);
+    expect(falling.yCollision, isFalse);
+    expect(falling.onGroundOf(-_gravity), isFalse);
     expect(
       falling.minY,
       closeTo(player.position.y - _gravity, 1e-9),
       reason: '自由下落一拍',
     );
-  });
-
-  test('记录语义：水平轴顺序恒为 X→Z（原版按 |dx|/|dz| 选 YXZ/YZX，待对齐）', () {
-    final world = _flatWorld();
-    world.setSolid(5, 64, 1); // 单格柱子 (x=5, z=1)
-    final collision = VoxelCollision(world);
-    final player = Player(position: Vector3(4.0, _standY, 0.5));
-
-    // |dz| = 1.0 > |dx| = 0.8：原版 Direction.axisStepOrder 会选 YZX（先 Z），
-    // 本实现固定 Y→X→Z。两者结果不同，这里断言实现的实际结果。
-    final r = collision.move(player.bounds, 0.8, -_gravity, 1.0);
-
-    // 实现的 X→Z：X 先走（bz=0 没柱子）→ x=4.8；再用 x=4.8 解 Z，
-    // 复查覆盖 bx=5 → 撞柱子，z 位移被吃掉。
-    expect(r.hitX, isFalse);
-    expect(r.centerX, closeTo(4.8, 1e-9));
-    expect(r.hitZ, isTrue);
-    expect(r.centerZ, closeTo(1.0 - 0.3 - _epsilon, 1e-9));
-    // 原版 YZX 会是：Z 先走完到 1.5，再由 z=1.5 解 X 撞柱子 → hitX 真。
-    expect(r.hitZ && !r.hitX, isTrue, reason: '固定 X→Z 的可观测后果');
   });
 }
