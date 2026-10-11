@@ -87,6 +87,19 @@
     macOS 已走真捕获。**移动端按用户决策（2026-10-07）完全不参与指针捕获**
     （MouseHandler._isDesktop 门控），视角走触控拖动。
 
+## 11. 区块流：光照引擎与 onChunkLoaded 附带面（影响正确性·中）
+
+- [ ] `ClientChunkCache.replaceWithPacketData` 的光照摄入面未建模——原版
+      `ClientPacketListener.java:843-857` 收列后 `queueLightUpdate`（applyLightData
+      + enableChunkLight + setSectionRangeDirty），我们无光照引擎（join-and-render
+      起即简化），区块以服务器列数据直接网格化 —— change `chunk-streaming-align`
+      接入存储环时保持现状
+- [ ] `ClientLevel.onChunkLoaded`（:522-525）的 tint 缓存失效与实体 tick 启动
+      面未建模（无对应物：tint 已在 mesher 内联，实体未实现）
+- [ ] 存储环缩窗迁移对窗外列**补发卸载事件**——原版 `updateViewRadius`
+      （ClientChunkCache.java:137-145）对未迁移列静默丢弃；我们 MUST 发事件
+      （渲染端"卸载必达"契约，spec 缩窗场景）—— 有意偏差，勿"修"
+
 ---
 
 ## 命名 / 路径偏离（非"债"，是纪律偏离，需逐步改正）
