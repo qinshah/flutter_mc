@@ -22,6 +22,7 @@ import 'key_map.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
 import 'package:flutter_mc/world/entity/player/abilities.dart';
 import 'package:flutter_mc/client/gui/gui.dart';
+import 'package:flutter_mc/client/multiplayer/level_load_tracker.dart';
 import 'package:flutter_mc/client/gui/screens/inventory/creative_mode_inventory_screen.dart';
 import 'package:flutter_mc/client/mouse_handler.dart';
 import 'package:flutter_mc/client/player/local_player.dart';
@@ -70,7 +71,27 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   final Player _player = Player();
 
   /// 已加载的列，键为 `(chunkX, chunkZ)`（邻居查询用）。
+  ///
+  /// **增删完全跟随会话事件**（ChunkLoaded/ChunkUnloaded）：列的持有/顶替/
+  /// 卸载决策在会话侧的存储环（`ClientChunkCache`，判据 `ClientChunkCache.java`），
+  /// 渲染端 MUST NOT 自行推断卸载。
   final Map<(int, int), RemoteChunkColumn> _columns = {};
+
+  /// 登录期就绪状态机（判据 `LevelLoadTracker.java`）：就绪前不跑玩家物理、
+  /// 不上行位置（原版 loading screen 期间玩家不 tick 的对位），就绪后发
+  /// `ServerboundPlayerLoadedPacket` 放行服务端。就绪判据 = 玩家列的段已
+  /// 网格化（或 30s 超时 / y 超界豁免）。一次性——与已拆除的"永续脚下列
+  /// 门禁"（自造偏差）不同。
+  final LevelLoadTracker _levelLoadTracker = LevelLoadTracker(
+    minY: SessionCollisionWorld.kMinY,
+    maxY: SessionCollisionWorld.kMaxY,
+  );
+  bool _worldReady = false;
+
+  /// 服务器窗口几何（`ViewGeometryChanged`；判据 `ClientPacketListener.java:2314-2330`）。
+  /// radius 为服务器语义半径（未 +3 换算）。供网格化优先级按 center 排序（未来）。
+  (int, int) _viewCenter = (0, 0);
+  int _viewRadius = 10;
 
   /// 已挂载的段节点，键为 `"chunkX,sectionY,chunkZ"`。
   final Map<String, Node> _sectionNodes = {};
@@ -151,9 +172,6 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 心跳累计（每 1s 打一行 [BEAT]；心跳停 = Ticker 死，心跳在但不动 = 输入/门禁问题）。
   double _beatAccum = 0;
   int _beatTick = 0;
-
-  /// 门禁日志节流（初值 1 ⇒ 首次被挡立即打）。
-  double _gateLogAccum = 1.0;
 
   /// 本秒收到的指针移动事件数（心跳里输出：冻结时区分"没事件"vs"事件没生效"）。
   int _pointerMoves = 0;
@@ -599,7 +617,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   void _onEventInner(SessionEvent event) {
     switch (event) {
       case JoinedGame():
-        // 进服成功；玩家位姿等随后的 PositionCorrection（原版登录后必发一次）。
+        // 进服成功；启动登录期就绪状态机（判据 `LevelLoadTracker.java`
+        // `startClientLoad`，:40-43——原版在玩家实体创建时调用）。
+        _levelLoadTracker.startClientLoad();
+        break;
+
+      case LevelChunksLoadStart():
+        // 服务器开始下发出生区块（判据 `ClientPacketListener.java:1551-1553`
+        // → `loadingPacketsReceived()`）：状态机进入"等待玩家列"阶段。
+        _levelLoadTracker.loadingPacketsReceived();
         break;
 
       case AbilitiesUpdated(
@@ -659,6 +685,18 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             '${(z - _player.position.z / 16).abs().toStringAsFixed(1)} '
             '${standing ? '⚠️ 卸载的是脚下列！' : ''}cols=${_columns.length - 1}');
         _unmountColumn(x, z);
+
+      case ViewGeometryChanged(
+          :final centerX,
+          :final centerZ,
+          :final radius
+        ):
+        // 窗口几何（判据 `ClientPacketListener.java:2314-2330`）：存储环的
+        // 收发边界由它决定（mc_session 侧已生效）；此处仅留痕 + 暂存字段，
+        // 供网格化优先级未来按 center 排序。
+        _viewCenter = (centerX, centerZ);
+        _viewRadius = radius;
+        debugPrint('[VIEW] center=($centerX,$centerZ) radius=$radius');
 
       case SessionClosed(:final reason):
         _exit(reason);
@@ -932,6 +970,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         'nativeLock=${_mouseHandler.usesNativeLock} '
         'ptrMoves=$_pointerMoves '
         'cols=${_columns.length} '
+        'view=($_viewCenter,$_viewRadius) '
         'dirty=${_dirtyQueue.length - _dirtyCursor} '
         'meshed=$_meshedThisSecond '
         'phys=$_physicsStepsThisSecond');
@@ -948,65 +987,37 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     // 0) 摊还网格化（每帧限额，避免地形涌入时卡住输入与渲染）。
     _processDirty();
 
-    // 脚下这一列的区块还没到就**不做物理也不上行**：原版客户端在收到区块前同样不动，
-    // 否则本地重力会在空世界里自由落体、人掉出世界、相机跑到地形下方。
-    //
-    // 注意**不要**再要求"已收到服务器位姿"才动：修掉 EntityPositionSync 误用之后，
-    // 那条路径不再产生位姿事件，而 Paper 并不保证登录后立刻发 PlayerPosition——
-    // 于是玩家永远不动、也不上行（实测：门禁加上它就再无任何上行）。
-    final spawnColumn = (_player.position.x.floor() >> 4, _player.position.z.floor() >> 4);
-    if (!_columns.containsKey(spawnColumn)) {
-      // **视角不受门禁影响**：原版客户端在未加载区块照样转头（服务器权威校验
-      // 兜底）。门禁只挡物理（防坠入未加载世界）——把 lookDelta 留着不消费
-      // 会让"脚下列消失 ⇒ 移动+视角同时冻结"（2026-10-07 实机复现，根因
-      // 待下面的 [GATE] 日志定位）。
-      final look = _input.lookDelta;
-      if (look.x != 0 || look.y != 0) {
-        _player.applyLook(look);
-        look.setZero();
+    // 0.0) 登录期就绪状态机（判据 `LevelLoadTracker.java`）：就绪前不跑物理、
+    // 不上行——原版 loading screen 期间玩家不 tick 的对位。就绪 = 玩家列的段
+    // 已网格化（或 30s 超时 / y 超界豁免），就绪即发 PlayerLoaded 放行服务端
+    // 并开始物理。**一次性**——与已拆除的永续门禁（自造偏差）判据不同。
+    if (!_worldReady) {
+      final cx = _player.position.x.floor() >> 4;
+      final cz = _player.position.z.floor() >> 4;
+      var sectionReady = false;
+      if (_columns.containsKey((cx, cz))) {
+        // 原版判据 = 玩家所在段编译完成（`playerSectionReady`，:128-132）；
+        // 本侧对应 = 该列全部段的节点已挂且无待网格化段。
+        final column = _columns[(cx, cz)]!;
+        sectionReady = List.generate(column.sections.length, (sy) => sy)
+            .every((sy) =>
+                _sectionNodes.containsKey('$cx,$sy,$cz') &&
+                !_dirtySet.contains((cx, sy, cz)));
       }
-      // **位置上行放在门禁之前**（判据 `LocalPlayer.tick:246` sendPosition）：
-      // 即使被门禁挡住（脚下列缺失），服务器也必须知道我们的真实位置——
-      // 它的区块流窗口跟着"相信位置"走，位置到了区块才会发过来（2026-10-07
-      // 实机：缺位置上行 ⇒ 服务器把区块持续发在旧位置周围 ⇒ 门禁永久卡死）。
-      _positionSync.tick(
-        player: _player,
-        yawDeg: 180.0 - _player.yaw * 180.0 / math.pi, // 原版 yRot 逆变换
-        pitchDeg: _player.pitch * 180.0 / math.pi,
-        horizontalCollision: _controller.horizontalCollision,
-        send: (variant, x, y, z, yRot, xRot, onGround, hCol) =>
-            widget.session.sendMovePlayer(
-          variant: variant.index,
-          x: x,
-          y: y,
-          z: z,
-          yRot: yRot,
-          xRot: xRot,
-          onGround: onGround,
-          horizontalCollision: hCol,
-        ),
+      _levelLoadTracker.tick(
+        playerSectionReady: sectionReady,
+        playerY: _player.position.y.floor(),
+        cameraY: _player.position.y.floor(),
       );
-      // 门禁挡住时**每秒留痕**（无条件，不依赖 _trace）：脚下列坐标 + 已加载列
-      // 里离玩家最近的几个——用来区分"服务器真没发"vs"键不一致"。
-      _gateLogAccum += dt;
-      if (_gateLogAccum >= 1.0) {
-        _gateLogAccum = 0;
-        final nearest = _columns.keys
-            .map((k) => (k, (k.$1 - spawnColumn.$1).abs() + (k.$2 - spawnColumn.$2).abs()))
-            .toList()
-          ..sort((a, b) => a.$2.compareTo(b.$2));
-        final sample = nearest
-            .take(5)
-            .map((e) => '${e.$1}(${e.$2})')
-            .join(' ');
-        debugPrint('[GATE] 脚下列 $spawnColumn 未加载！cols=${_columns.length} '
-            'pos=(${_player.position.x.toStringAsFixed(1)},'
-            '${_player.position.y.toStringAsFixed(1)},'
-            '${_player.position.z.toStringAsFixed(1)}) '
-            '最近列: $sample');
+      if (_levelLoadTracker.shouldNotifyPlayerLoaded()) {
+        _worldReady = true;
+        widget.session.sendPlayerLoaded();
+        debugPrint('[LOAD] 世界就绪，PlayerLoaded 已上行（'
+            'cols=${_columns.length}）');
+      } else {
+        _cameraSync();
+        return;
       }
-      _cameraSync();
-      return;
     }
 
     // 0.5) 合成输入（仅调试开关开启时）。
@@ -1016,12 +1027,40 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       _player.yaw += 0.9 * dt;
       _input
         ..move.y = 1 // 一直向前
-        ..jump = _autoWalkTime % 2.0 < 0.15; // 每 2 秒按一下空格
+        ..jump = _autoWalkTime % 2.0 < 0.15 // 每 2 秒按一下空格
+        // 疾跑跑图（取证：复现"高速跑图卡输入"，20 格/秒 飞行疾跑）
+        ..sprint = true;
+      // 3 秒后进创造飞行（服务器已下发 mayfly），复现高速跑图场景。
+      if (_autoWalkTime > 3 && !_controller.flying) {
+        _controller.flying = true;
+        widget.session.sendAbilities(flying: true);
+      }
     }
 
     // 1) 本地预测：物理推进（固定步长；dt 是渲染帧间隔）。
     _controller.tick(dt, _input);
     _physicsStepsThisSecond++;
+
+    // 1.1) 位置上行（判据 `LocalPlayer.tick:246` sendPosition——在 super.tick()
+    // 之后每 tick 调用，变体判定即其逐行翻译）。无条件运行：服务器的"相信位置"
+    // 是区块流窗口的圆心（ChunkMap.updateChunkTracking），缺它窗口就停在旧位置。
+    _positionSync.tick(
+      player: _player,
+      yawDeg: 180.0 - _player.yaw * 180.0 / math.pi, // 原版 yRot 逆变换
+      pitchDeg: _player.pitch * 180.0 / math.pi,
+      horizontalCollision: _controller.horizontalCollision,
+      send: (variant, x, y, z, yRot, xRot, onGround, hCol) =>
+          widget.session.sendMovePlayer(
+        variant: variant.index,
+        x: x,
+        y: y,
+        z: z,
+        yRot: yRot,
+        xRot: xRot,
+        onGround: onGround,
+        horizontalCollision: hCol,
+      ),
+    );
 
     // 1.2) 手持槽位 ensure 上行（判据 `MultiPlayerGameMode.tick:305-307` →
     // `ensureHasSentCarriedItem:317-323`：变化才发 SetCarriedItem）。
