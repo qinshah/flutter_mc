@@ -14,8 +14,9 @@
 /// - 状态机 `WaitingForServer --loadingPacketsReceived()--> WaitingForPlayerChunk
 ///   --isReady()--> ClientLevelReady`（:87-90, :99-104, :117-135）
 /// - `isReady()`（:119-133）：玩家/相机 y 超出建筑高度、旁观、死亡 ⇒ 直接就绪；
-///   否则等 `playerSectionReady`（玩家所在段编译完成——本侧对应"玩家列的段
-///   已网格化"）
+///   否则等 `playerSectionReady`（玩家所在段编译完成——本侧对应"该段的
+///   `_compiledSections` 标记已置位"，**空段也算**：原版空段编译产物非
+///   UNCOMPILED，SectionRenderDispatcher.java:327-332）
 /// - `isLevelReady()`（:46-48）= ClientLevelReady 且过 `closeDelayMs`
 ///   （ConnectScreen 传 0——我们走 JoinFlow 对应 ConnectScreen ⇒ 0）
 class LevelLoadTracker {

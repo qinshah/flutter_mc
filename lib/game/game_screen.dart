@@ -93,8 +93,19 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   (int, int) _viewCenter = (0, 0);
   int _viewRadius = 10;
 
-  /// 已挂载的段节点，键为 `"chunkX,sectionY,chunkZ"`。
+  /// 已挂载的段节点，键为 `"chunkX,sectionY,chunkZ"`（**绝对段号**）。
   final Map<String, Node> _sectionNodes = {};
+
+  /// 已完成网格化的段键（**绝对段号**）——含 mesh 为空的段。
+  ///
+  /// 判据：原版 `RenderSection.sectionMesh != CompiledSectionMesh.UNCOMPILED`
+  /// （`SectionRenderDispatcher.java:204`）；编译产物对空段同样置位（`:327-332`
+  /// setSectionMesh 无条件调用），默认 `fadeDuration = 0` ⇒ `getVisibility`
+  /// 恒 1.0 ≥ 0.3（`:219-222`）⇒ 判据实际收敛为"编译过一次"。登录就绪
+  /// gate（LevelLoadTracker 的 playerSectionReady）据此判定——**不能用
+  /// [_sectionNodes] 代替**：玩家悬空时所在段是空气，mesh 为空不建 node，
+  /// 旧判据永不满足 ⇒ 每次都吃满 30s 超时才进世界（2026-10-12 实证）。
+  final Set<String> _compiledSections = {};
 
   /// 方块语义的**查询缓存**（mc_render 自带）。必须复用同一个实例：语义查询是
   /// 网格化最热的一环（每格每面都要问），而 `BlockSemanticsV262` 每次都做
@@ -777,14 +788,20 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   void _mountColumn(RemoteChunkColumn column) {
     _columns[(column.x, column.z)] = column;
-    for (var sy = 0; sy < column.sections.length; sy++) {
+    // 段号 = 绝对段号（minSectionY..minSectionY+len-1，overworld −4..19）。
+    // 相对下标只存在于 RemoteChunkColumn.sections 内部。
+    for (var sy = column.minSectionY;
+        sy < column.minSectionY + column.sections.length;
+        sy++) {
       _markDirty(column.x, sy, column.z);
     }
     // 新列就位后，贴边邻居段的边界面从"外表面"变成"内部面"，必须重建。
     for (final (dx, dz) in const [(-1, 0), (1, 0), (0, -1), (0, 1)]) {
       final neighbor = _columns[(column.x + dx, column.z + dz)];
       if (neighbor == null) continue;
-      for (var sy = 0; sy < neighbor.sections.length; sy++) {
+      for (var sy = neighbor.minSectionY;
+          sy < neighbor.minSectionY + neighbor.sections.length;
+          sy++) {
         _markDirty(neighbor.x, sy, neighbor.z);
       }
     }
@@ -797,7 +814,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// 贴图——解析通常几秒内收敛，可接受。
   void _markAllSectionsDirty() {
     for (final column in _columns.values) {
-      for (var sy = 0; sy < column.sections.length; sy++) {
+      for (var sy = column.minSectionY;
+          sy < column.minSectionY + column.sections.length;
+          sy++) {
         _markDirty(column.x, sy, column.z);
       }
     }
@@ -871,11 +890,20 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       final node = _sectionNodes.remove(key);
       if (node != null) _scene.remove(node);
     }
+    // 编译标记一并撤销（原版 RenderSection.reset 把 sectionMesh 置回
+    // UNCOMPILED，SectionRenderDispatcher.java:255-267）。
+    _compiledSections.removeAll(
+      _compiledSections
+          .where((k) => k.startsWith(prefix) && k.endsWith(suffix))
+          .toList(),
+    );
     // 邻居的贴边面重新变成外表面，需要复建。
     for (final (dx, dz) in const [(-1, 0), (1, 0), (0, -1), (0, 1)]) {
       final neighbor = _columns[(chunkX + dx, chunkZ + dz)];
       if (neighbor == null) continue;
-      for (var sy = 0; sy < neighbor.sections.length; sy++) {
+      for (var sy = neighbor.minSectionY;
+          sy < neighbor.minSectionY + neighbor.sections.length;
+          sy++) {
         _markDirty(neighbor.x, sy, neighbor.z);
       }
     }
@@ -896,7 +924,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   void _remeshSectionInner(int chunkX, int sectionY, int chunkZ) {
     final column = _columns[(chunkX, chunkZ)];
-    if (column == null || sectionY < 0 || sectionY >= column.sections.length) {
+    if (column == null ||
+        sectionY < column.minSectionY ||
+        sectionY >= column.minSectionY + column.sections.length) {
       return;
     }
     // 静态资源/材质就绪前不该有事件进来（订阅在 _boot 里晚于建材质），防御一下。
@@ -913,6 +943,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       // 贴图表由资源包在启动期预解析（资产缺失时退化为整图 + 顶点色）。
       uvFor: _blockTextures?.uvFor ?? _flatUv,
     );
+    // 编译完成即置位——**空段也算**（原版编译产物对空段同样非 UNCOMPILED，
+    // SectionRenderDispatcher.java:327-332；登录 gate 依赖此语义）。
+    _compiledSections.add(key);
     if (mesh.isEmpty) return;
 
     final node = _buildNode(chunkX, sectionY, chunkZ, mesh);
@@ -1046,18 +1079,17 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     if (!_worldReady) {
       final cx = _player.position.x.floor() >> 4;
       final cz = _player.position.z.floor() >> 4;
-      // 原版判据 = **相机所在段**已编译（LevelRenderer.java:272-275：
+      // 原版判据 = **相机所在段已编译**（LevelRenderer.java:272-275：
       // isSectionCompiledAndVisible(cameraPos) → playerSectionReady.set(true)，
-      // AtomicBoolean 一次性——之后邻居到达的重网格化**不会撤销**）。
-      // 本侧对应 = 该段的 mesh 节点已建出（_remeshSection 同步换新，
-      // node 一旦存在即编译完成过）。
-      // 【2026-10-12 坑】旧实现等"整列全部段且不在脏集合"——邻居列到达会
-      // 不断把玩家段重新标脏 ⇒ 条件实际是"全窗口网格化完毕" ⇒ 每次都吃满
-      // 30s 超时才就绪（原版几秒，实测差近 1 分钟）。
+      // AtomicBoolean 一次性——之后邻居到达的重网格化**不会撤销**；
+      // isSectionCompiledAndVisible = sectionMesh != UNCOMPILED，:887-895，
+      // **空段编译产物非 UNCOMPILED 也算**——玩家悬空时所在段是空气，旧实现
+      // 用"node 存在"代替"已编译"，空段永不建 node ⇒ 每次吃满 30s 超时，
+      // 2026-10-12 实证）。本侧对应 = [_compiledSections]（重网格化同步置位）。
       var sectionReady = false;
       if (_columns.containsKey((cx, cz))) {
         final sectionY = _player.position.y.floor() >> 4;
-        sectionReady = _sectionNodes.containsKey('$cx,$sectionY,$cz');
+        sectionReady = _compiledSections.contains('$cx,$sectionY,$cz');
       }
       _levelLoadTracker.tick(
         playerSectionReady: sectionReady,
