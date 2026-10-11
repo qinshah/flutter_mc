@@ -1,3 +1,4 @@
+import 'package:mc_render/mc_render.dart';
 import 'package:flutter_mc/game/collision.dart';
 import 'package:flutter_mc/world/entity/player/input.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
@@ -13,6 +14,12 @@ import 'package:flutter_test/flutter_test.dart';
 class _EmptyWorld implements CollisionWorld {
   @override
   bool isCollidable(int bx, int by, int bz) => false;
+  @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) => null;
+  @override
+  double blockFrictionAt(int bx, int by, int bz) => 0.6;
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) => null;
   @override
   bool isColumnLoaded(int cx, int cz) => true;
   @override

@@ -1,4 +1,5 @@
 import 'dart:math' as pi_lib;
+import 'package:mc_render/mc_render.dart';
 import 'package:flutter_mc/game/collision.dart';
 import 'package:flutter_mc/world/entity/player/input.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
@@ -11,6 +12,12 @@ import 'package:vector_math/vector_math.dart';
 class EmptyWorld implements CollisionWorld {
   @override
   bool isCollidable(int bx, int by, int bz) => false;
+  @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) => null;
+  @override
+  double blockFrictionAt(int bx, int by, int bz) => 0.6;
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) => null;
   @override
   bool isColumnLoaded(int cx, int cz) => true;
   @override
@@ -27,7 +34,7 @@ double _flyFor(void Function(Input) setup, {double flyingSpeed = 0.05}) {
     player: Player(),
     abilities: Abilities(mayfly: true, flyingSpeed: flyingSpeed),
   );
-  controller.player.position.y = 100;
+  controller.player.setPos(0, 100, 0);
   controller.flying = true;
   final input = Input();
   setup(input);
@@ -45,7 +52,7 @@ double _flyForHorizontal(void Function(Input) setup, {double flyingSpeed = 0.05}
     player: Player(),
     abilities: Abilities(mayfly: true, flyingSpeed: flyingSpeed),
   );
-  controller.player.position.y = 100;
+  controller.player.setPos(0, 100, 0);
   controller.flying = true;
   final input = Input();
   setup(input);
@@ -199,14 +206,14 @@ void main() {
       player: Player(),
       abilities: Abilities(mayfly: true, flyingSpeed: 0.1),
     );
-    fast.player.position.y = 100;
+    fast.player.setPos(0, 100, 0);
     fast.flying = true;
     final normal = LocalPlayer(
       world: EmptyWorld(),
       player: Player(),
       abilities: Abilities(mayfly: true, flyingSpeed: 0.05),
     );
-    normal.player.position.y = 100;
+    normal.player.setPos(0, 100, 0);
     normal.flying = true;
 
     // 竖直：flyingSpeed 加倍 ⇒ 位移加倍。

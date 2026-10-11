@@ -1,3 +1,4 @@
+import 'package:mc_render/mc_render.dart';
 import 'package:flutter_mc/game/collision.dart';
 import 'package:flutter_mc/world/entity/player/input.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
@@ -9,6 +10,12 @@ import 'package:flutter_test/flutter_test.dart';
 class JumpEmptyWorld implements CollisionWorld {
   @override
   bool isCollidable(int bx, int by, int bz) => false;
+  @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) => null;
+  @override
+  double blockFrictionAt(int bx, int by, int bz) => 0.6;
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) => null;
   @override
   bool isColumnLoaded(int cx, int cz) => true;
   @override
@@ -28,6 +35,14 @@ class JumpStepWorld implements CollisionWorld {
     if (by == 0 && bx >= 3 && bx <= 4 && bz >= 0 && bz <= 1) return true;
     return false;
   }
+
+  @override
+  VoxelShape? collisionShapeAt(int bx, int by, int bz) =>
+      isCollidable(bx, by, bz) ? VoxelShape.full() : null;
+  @override
+  double blockFrictionAt(int bx, int by, int bz) => 0.6;
+  @override
+  String? blockIdentityAt(int bx, int by, int bz) => null;
 
   @override
   bool isColumnLoaded(int cx, int cz) => true;
@@ -52,7 +67,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
 
     const dt = 1 / 120;
     final input = Input()..jump = true;
@@ -77,7 +92,7 @@ void main() {
       abilities: Abilities(mayfly: false),
     );
     // 站在地面上（脚底 y=0，地面在 by=-1），台子在 +x 方向 x∈[3,5)
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
 
     const dt = 1 / 120;
     final input = Input()
@@ -103,7 +118,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
     const dt = 1 / 120;
     final input = Input()..jump = true; // 一直按住
 
@@ -129,7 +144,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
     const dt = 1 / 120;
     final input = Input()..jump = true;
 
@@ -161,7 +176,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 3.0, 0.5); // 从 3 格高落下
+    player.setPos(0.5, 3.0, 0.5); // 从 3 格高落下
     const dt = 1 / 120;
     final input = Input();
     for (var i = 0; i < 400; i++) {
@@ -174,7 +189,9 @@ void main() {
       controller.tick(dt, input);
     }
     expect((player.position.y - restY).abs(), lessThan(1e-9));
-    expect(player.velocity.y, 0);
+    // 原版落地不清零 vy：重力持续作用、被地面截停（vy 负收敛，2026-10-11
+    // 对齐 Entity.java:1146 着地语义时一并修正——旧实现清零 + 探针会抖）。
+    expect(player.velocity.y, lessThan(0));
   });
 
   test('插帧：飞行态也插值（原版对所有实体一律插值）', () {
@@ -189,7 +206,7 @@ void main() {
       abilities: Abilities(mayfly: true),
     );
     controller.flying = true;
-    player.position.setValues(0.5, 200.0, 0.5);
+    player.setPos(0.5, 200.0, 0.5);
     const dt = 1 / 120;
     final input = Input()..jump = true;
 
@@ -223,7 +240,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
     const dt = 1 / 120;
     final input = Input()..jump = true;
     var sawFraction = false;
@@ -250,7 +267,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 3.0, 0.5); // 3 格高自由下落
+    player.setPos(0.5, 3.0, 0.5); // 3 格高自由下落
     const dt = 1 / 120;
     final input = Input(); // 失焦后典型状态：不按任何键
     var maxFallPerFrame = 0.0;
@@ -264,7 +281,8 @@ void main() {
       if (player.onGround && i > 10) break;
     }
     expect(player.onGround, isTrue);
-    expect(player.velocity.y, 0);
+    // 原版落地不清零 vy（Entity.java:1146 语义）：负收敛值被地面截停。
+    expect(player.velocity.y, lessThan(0));
     // 终端 78.4 格/秒 ⇒ 单帧(1/120s) 上限 0.65333 格
     expect(maxFallPerFrame, lessThanOrEqualTo(78.4 / 120 + 1e-9));
     // 落地静止时脚底应贴面（epsilon = 1e-7 量级，不是 1e-4）
@@ -281,7 +299,7 @@ void main() {
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
     const dt = 1 / 120;
     final input = Input()..jump = true;
 
@@ -308,20 +326,32 @@ void main() {
     expect(renderDeltas.length, greaterThan(physSteps * 3));
   });
 
-  test('跳跃：落地后竖直速度归零（不残留影响下次起跳）', () {
+  test('跳跃：落地后 vy 负收敛（原版不清零）且再跳仍越过 1 格', () {
+    // 原版落地不清零 vy：重力持续作用、被地面截停（Entity.java:1146 语义，
+    // 2026-10-11 对齐）；jumpFromGround 注入取 max(jumpPower, vy)，负残值
+    // 不影响下次起跳。
     final player = Player();
     final controller = LocalPlayer(
       world: JumpStepWorld(),
       player: player,
       abilities: Abilities(mayfly: false),
     );
-    player.position.setValues(0.5, 0.0, 0.5);
+    player.setPos(0.5, 0.0, 0.5);
     const dt = 1 / 120;
     final input = Input();
     for (var i = 0; i < 30; i++) {
       controller.tick(dt, input);
     }
     expect(player.onGround, isTrue);
-    expect(player.velocity.y.abs(), lessThan(0.001));
+    expect(player.velocity.y, lessThan(0));
+
+    // 再按跳：仍应越过 1 格（负残值不拖累起跳）。
+    final jumpInput = Input()..jump = true;
+    var peak = player.position.y;
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, jumpInput);
+      if (player.position.y > peak) peak = player.position.y;
+    }
+    expect(peak, greaterThan(1.0));
   });
 }

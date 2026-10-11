@@ -7,7 +7,7 @@ import 'package:flutter_mc/world/entity/player/abilities.dart';
 import 'package:flutter_mc/world/entity/player/input.dart';
 import 'package:flutter_mc/world/entity/player/player.dart';
 
-/// 本地玩家：读 [Input] → 重力/跳跃 → 碰撞求解 → 写 [Player]。
+/// 本地玩家：读 [Input] → travel 链 → 碰撞求解 → 写 [Player]。
 ///
 /// 判据：`net.minecraft.client.player.LocalPlayer`
 /// （mc-sources/minecraft-26.2/.../client/player/LocalPlayer.java:117）。
@@ -15,26 +15,30 @@ import 'package:flutter_mc/world/entity/player/player.dart';
 /// **纯逻辑**：不 import Flutter / flutter_scene，所以运动学可以完整单测
 /// （引擎侧的按键与节点变换在 app 壳的 `game_screen.dart` 里接）。
 ///
-/// 简化点（标注）：水平方向按输入**直接赋值目标速度**（无加速/摩擦惯性）——
-/// 原版 `LivingEntity.travel` 的加速度与地面摩擦链（0.91 摩擦）留作后续切片。
-/// 竖直方向照原版**逐刻**语义（先减重力、再乘空气阻力），故终端速度与原版一致。
+/// 行走 = **逐刻 travel 链**（2026-10-11 对齐重写，判据 `LivingEntity.travelInAir`
+/// LivingEntity.java:2449-2477 + `handleRelativeFrictionAndCalculateMovement`
+/// :2654-2666 + `Entity.move` 的 restitute Entity.java:793-795）：
+/// 注入（moveRelative）→ move（整刻位移，每刻一次）→ **碰撞轴清零**
+/// （restituteMovementAfterCollisions，restitution=0）→ 扣重力 → 乘摩擦。
+/// 飞行 = `Player.travel` 飞行分支（Player.java:1398）+ `LocalPlayer.aiStep`
+/// 竖直注入（:833-845），逐刻递推照旧。
 class LocalPlayer {
+  /// 穿透探针开关（与 app 壳的 TRACE 共用 define）。
+  static const bool kTracePenetrate = bool.fromEnvironment('TRACE');
 
-/// —— 运动常量（判据 mc-sources/minecraft-26.2）——（原版**每刻值**换算到每秒；判据 `mc-sources/minecraft-26.2`）。
+
+/// —— 运动常量（判据 mc-sources/minecraft-26.2）——
 ///
-/// - 重力 0.08 /刻 —— `Attributes.GRAVITY` 默认值（Attributes.java:56）→ ×400 = 32 block/s²
-/// - 跳跃初速 0.42 /刻 —— `Attributes.JUMP_STRENGTH` 默认值（Attributes.java:59），
-///   同值亦见 `LivingEntity.BASE_JUMP_POWER`（LivingEntity.java:172）→ ×20 = 8.4 block/s
-/// - 空气阻力 0.98 /刻 —— `Entity.getAirDrag()`（Entity.java:1536）
-/// - 终端速度 —— 0.08 / (1 − 0.98) = 3.92 block/刻 → 78.4 block/s
-/// - 行走/疾跑/潜行 —— 4.317 / 5.612 / 1.295 block/s（`Player.createAttributes()` 的
-///   `MOVEMENT_SPEED` 0.1，Player.java:209，配地面摩擦的稳态速度）
-  static const double gravity = 32.0;
-  static const double jumpVelocity = 8.4;
-  static const double terminalVelocity = -78.4;
-
-
-  ///
+/// - 重力 0.08 /刻 —— `Attributes.GRAVITY` 默认值（Attributes.java:56）
+/// - 跳跃初速 0.42 /刻 —— `Attributes.JUMP_STRENGTH` 默认值（Attributes.java:59）
+/// - 空气阻力 0.91（水平）/ 0.98（竖直）—— `travelInAir`（:2472-2475）
+/// - 行走注入 = `MOVEMENT_SPEED` 0.1（Player.java:209）× 疾跑 1.3
+///   （LivingEntity.java:157-158 ADD_MULTIPLIED_TOTAL）× 潜行 0.3
+///   （`Attributes.SNEAKING_SPEED` 默认）；
+///   **空中注入 = `getFlyingSpeed()` = 0.02**（LivingEntity.java:2699-2701，
+///   Player 未覆盖步行态）——这是"跳跃/空中转向明显慢于地面"的原版语义。
+/// - 地面摩擦 = blockFriction(默认 0.6) × airDrag(0.91) = 0.546（:2450-2453/:2473）
+  static const double jumpVelocity = 8.4; // 0.42 格/刻 × 20（格/秒口径，对外）
 
   /// 创造飞行的**竖直**注入系数（判据 `LocalPlayer.aiStep`，`LocalPlayer.java:844`）：
   /// `setDeltaMovement(add(0, inputYa * abilities.getFlyingSpeed() * 3.0F, 0))`。
@@ -48,10 +52,6 @@ class LocalPlayer {
   /// 早先误把两者统一成 `getSpeed() × 0.1`（0.01 格/刻），比原版慢 15 倍
   /// （原版竖直是 0.05×3 = 0.15 格/刻）⇒ 实机反馈"飞行慢得像蜗牛"。
   static const double flyVerticalInputScale = 3.0;
-
-  static const double walkSpeed = 4.317;
-  static const double sprintSpeed = 5.612;
-  static const double sneakSpeed = 1.295;
 
   /// 创造飞行·水平摩擦（REF: `LivingEntity.travelInAir` 空中分支：
   /// `blockFriction = 1.0` × `airDrag = 0.91`）。
@@ -205,11 +205,18 @@ class LocalPlayer {
 
   double _accumulator = 0;
 
-  /// 竖直刻速度（`格/刻`）。对外的 [Player.velocity]（格/秒）由它 ×20 换算。
-  double _vyTicks = 0;
+  /// **deltaMovement（格/刻）**——原版 `Entity.getDeltaMovement()` 对应物。
+  /// 行走/飞行共用一条状态（两条路径不会同时推进）。
+  ///
+  /// **着地不清零的历史教训（2026-10-11）**：曾把竖直状态单独放在 `_vyTicks`
+  /// 且落地不清零 ⇒ 站立时 vy 收敛到 −3.92（终端速度），走出方块 = 瞬时满速
+  /// 下坠。原版 `Entity.move` 的 restitute（Entity.java:793-795/:851，
+  /// restitution=0）在**每次落地/撞墙时把碰撞轴清零**，站立 vy 每刻停在
+  /// −0.0784，走出后从慢速正常加速。
+  final Vector3 _deltaMovement = Vector3.zero();
 
-  /// 距下一个刻边界的时间（秒）。竖直运动学只在此边界推进。
-  double _verticalTickAccum = 0;
+  /// 行走 travel 链的刻累加器（每刻一次，`travel` 20Hz 口径）。
+  double _walkTickAccum = 0;
 
   /// 飞行用的刻累加器（判据同竖直：`Player.travel` 每 tick 一次 `move()`，
   /// `Player.java:1395-1400`）。与 [_verticalTickAccum] 分开是因为两条路径
@@ -225,14 +232,9 @@ class LocalPlayer {
 
   /// 本刻**未衰减**的水平位移（格/刻），供 `collision.move` 用。
   /// 原版 `move()` 在 `travelInAir` 的 `×0.91` 之前调用，故位移取衰减前的值。
-  double _flyVelocityThisTickX = 0;
-  double _flyVelocityThisTickY = 0;
-  double _flyVelocityThisTickZ = 0;
-
-  /// 本帧跨过刻边界时攒下的**整刻竖直位移**（格）。
-  /// 原版一 tick 一次 `move()`，故必须整块结算——摊到 1/120s 子步会产生
-  /// "阶梯式爬升"的滞手感（2026-10-07 实机：落地/起跳像陷进海绵）。
-  double _pendingVertical = 0;
+  double _flyMoveThisTickX = 0;
+  double _flyMoveThisTickY = 0;
+  double _flyMoveThisTickZ = 0;
 
   /// 用一帧的真实 `dt` 驱动：内部按 [fixedStep] 固定步长累加。
   void tick(double dt, Input input) {
@@ -277,7 +279,7 @@ class LocalPlayer {
           if (flying && player.onGround) {
             // 原版 `jumpFromGround()`：注入 0.42 格/刻，随后同样被 `Player.travel`
             // 的 ×0.6 收尾——直接写 player.velocity 会被下一步覆盖，故加在刻速度上。
-            _flyVelocity.y += jumpVelocity / 20.0;
+            _deltaMovement.y += jumpVelocity / 20.0;
           }
           _jumpTriggerSeconds = 0;
         }
@@ -291,99 +293,166 @@ class LocalPlayer {
       return;
     }
 
-    // —— 水平：输入是玩家本地坐标（y 前、x 右），按 yaw 转到世界系 ——
-    // 速度倍率读 `_sprinting`（判据 `Player.getFrictionInfluencedSpeed` ←
-    // `isSprinting()`；键位只是触发条件）。
-    final speed = input.shift
-        ? sneakSpeed
-        : _sprinting
-            ? sprintSpeed
-            : walkSpeed;
+    _walkingStep(dt, input);
+  }
+
+  /// 行走固定步：**每刻一次 travel 链**（原版 20Hz；与飞行路径同构——
+  /// 刻内未跨刻的子步不产生位移，渲染插值由 [Player.tickProgress] 平滑）。
+  void _walkingStep(double dt, Input input) {
+    _walkTickAccum += dt;
+    while (_walkTickAccum >= tickSeconds - 1e-9) {
+      _walkTickAccum -= tickSeconds;
+      // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `EntityRenderer` 的 `xOld`）。
+      player.yOld = player.position.y;
+      _travelWalkingTick(input);
+      // 新的一刻 ⇒ 允许再次注入跳跃初速（原版 `noJumpDelay` 是 10 刻冷却，
+      // 本期只保证"每刻至多注入一次"）。
+      _jumpedThisTick = false;
+    }
+    _advanceTickProgress();
+  }
+
+  /// 一个行走刻的 **travel 链**（逐行对应 `LivingEntity.travelInAir`，
+  /// LivingEntity.java:2449-2477）：
+  ///
+  /// ```java
+  /// :2450-2453  blockFriction = onGround ? 脚下方块摩擦 : 1.0
+  /// :2454       movement = handleRelativeFrictionAndCalculateMovement(input, f)
+  ///               └ :2656 moveRelative(getFrictionInfluencedSpeed(f), input)
+  ///               └ :2658 move(MoverType.SELF, deltaMovement)      ← 每刻一次
+  /// :2458-2460  movementY = movement.y − getEffectiveGravity()     （0.08）
+  /// :2472-2475  setDeltaMovement(x × (f×0.91), movementY × 0.98, z × (f×0.91))
+  /// ```
+  ///
+  /// 外加 `Entity.move` 的 **restitute**（Entity.java:793-795/:851-853，
+  /// 本地玩家 authoritative ⇒ 恒执行；restitution=0 ⇒ **碰撞轴清零**）：
+  /// 落地/撞顶清 vy、撞墙清 v.x/v.z。三个实机症状全部源于此前缺这一环：
+  /// ① 着地不清 vy ⇒ 站立时 vy 收敛到 −3.92（终端速度），走出方块 = 瞬时
+  ///    满速下坠（原版每刻落地清零 ⇒ 走出后从 −0.0784 慢加速）；
+  /// ② 空中注入 = `getFlyingSpeed()` 0.02 格/刻 + 0.91 阻力（惯性渐变），
+  ///    而非每步直赋全速；
+  /// ③ 撞墙轴不清 ⇒ 旧实现每子步重新赋全速再被截停（贴墙抽搐）。
+  void _travelWalkingTick(Input input) {
+    final v = _deltaMovement;
+
+    // ① `jumpFromGround()`（LivingEntity.java:2370-2381；aiStep 在 travel 前调用）。
+    if (input.jump && player.onGround && !_jumpedThisTick) {
+      final jumpPower = jumpVelocity / 20.0; // 0.42 格/刻
+      v.y = math.max(jumpPower, v.y);
+      if (_sprinting) {
+        // :2378-2381 疾跑跳纵向助推。原版 yRot（0=+Z）的 (−sin, +cos) 换算到
+        // 我们的 yaw（0=−Z，yRot = 180° − yaw）：sin(yRot)=sin(yaw)、
+        // cos(yRot)=−cos(yaw) ⇒ 助推 = (−sin(yaw), −cos(yaw))×0.2
+        //（与前进方向 (−sin, −cos) 同向，恰为前进 ×0.2）。
+        v.x -= math.sin(player.yaw) * 0.2;
+        v.z -= math.cos(player.yaw) * 0.2;
+      }
+      _jumpedThisTick = true;
+    }
+
+    // ② blockFriction（:2450-2453；`getOnPos(0.500001)` = 脚下采样，Entity.java:1059-1061）。
+    final belowY = (player.bounds.minY - 0.500001).floor();
+    final f = player.onGround
+        ? world.blockFrictionAt(
+            player.position.x.floor(), belowY, player.position.z.floor())
+        : 1.0;
+
+    // ③ moveRelative 注入（`getFrictionInfluencedSpeed` :2695-2701：
+    //    地面常规 f=0.6（不满足 >0.6）→ getSpeed() 原值；冰面 f>0.6 →
+    //    speed × 0.216/f³；**空中 → getFlyingSpeed() = 0.02**）。
+    final base = (abilities?.walkingSpeed ?? 0.1) *
+        (_sprinting ? 1.3 : 1.0) * // 疾跑 +0.3 ADD_MULTIPLIED_TOTAL（:157-158）
+        (input.shift ? 0.3 : 1.0); // 潜行 ×0.3（Attributes.SNEAKING_SPEED 默认）
+    final injection = player.onGround
+        ? (f > 0.6 ? base * 0.21600002 / (f * f * f) : base)
+        : 0.02;
     if (input.isMoving) {
       final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
       final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
-      final desired = forward * input.move.y + right * input.move.x;
-      final len = desired.length;
-      if (len > 0) {
-        final dir = desired / len;
-        player.velocity.x = dir.x * speed;
-        player.velocity.z = dir.z * speed;
-      }
-    } else {
-      player.velocity.x = 0;
-      player.velocity.z = 0;
+      var desired = forward * input.move.y + right * input.move.x;
+      // `getInputVector`（Entity.java:1752-1756）：len² > 1 先归一化。
+      if (desired.length2 > 1.0) desired = desired.normalized();
+      v.x += desired.x * injection;
+      v.z += desired.z * injection;
     }
 
-    // —— 竖直：刻边界递推（REF 见PlayerMotion 处的时序注释）——
-    //
-    // 碰撞求解在 1/120s 固定步内跑（细步长防穿墙），但**竖直运动学只在刻边界推进**
-    // —— 否则每子步都吃一次重力，累积后跳高从1.2522 掉到 0.9969 格（跳不上 1 格）。
-    // `_pendingVerticalSteps` 记录"到下一个刻边界还剩几格竖直要积分"。
-    final jumpPower =
-        jumpVelocity; // 格/秒（= 0.42 格/刻 × 20）
-    if (input.jump && player.onGround && !_jumpedThisTick) {
-      // `jumpFromGround()`：`Math.max(jumpPower, movement.y)`（源码 2372）——
-      // 注入取较大者，MUST NOT 把已有的上升速度改小。
-      final vyTicks = _vyTicks > 0 ? _vyTicks : jumpPower / 20.0;
-      _vyTicks = vyTicks;
-      _jumpedThisTick = true;
-      player.onGround = false;
-    }
-
-    _verticalTickAccum += dt;
-    while (_verticalTickAccum >= tickSeconds) {
-      _verticalTickAccum -= tickSeconds;
-      // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `EntityRenderer` 的 `xOld`）。
-      player.yOld = player.position.y;
-      _advanceVerticalTick(jumpPower);
-      // 新的一刻 ⇒ 允许再次注入跳跃初速（原版 `noJumpDelay = 10` 是 10 刻冷却，
-      // 本期只保证"每刻至多注入一次"，按住空格即可连续跳）。
-      _jumpedThisTick = false;
-    }
-
-    // 对外暴露的竖直速度 = 刻速度 ×20（与 [Player.velocity] 的格/秒口径一致）。
-    player.velocity.y = _vyTicks * 20.0;
-
-    // —— 竖直位移：按**整刻**结算，不摊到 1/120s 子步 ——
-    //
-    // 原版 `handleRelativeFrictionAndCalculateMovement` 里`move(MoverType.SELF,
-    // deltaMovement)` 用的是 `deltaMovement`（**每刻位移**），一 tick 一次。
-    // 若把 1/120s 的 dt 乘进刻速度，就等于"一个刻的位移在 6 个子步里重复用"，
-    // 视觉上就成了**阶梯式慢速爬升**——手感像陷进海绵（2026-10-07 实机反馈）。
-    //
-    // `_pendingVertical` 记录"本帧跨过刻边界时攒下的整刻位移"，在子步里
-    // **只结算一次**，其余子步竖直位移为 0（水平照旧逐子步求交，防穿墙）。
+    // ④ move（:2658——每刻一次，整刻位移；扫掠/步高在 collision.move 内）。
+    final dy = v.y;
     final result = collision.move(
       player.bounds,
-      player.velocity.x * dt,
-      _pendingVertical,
-      player.velocity.z * dt,
+      v.x,
+      v.y,
+      v.z,
+      wasOnGround: player.onGround,
     );
-    _pendingVertical = 0;
-    // 被挡的轴速度清零（贴墙滑动由 collision 的逐轴求解保证）。
-    if (result.hitX) player.velocity.x = 0;
-    if (result.hitZ) player.velocity.z = 0;
-    // 水平碰撞供加速状态机的 `shouldStopRunSprinting` 用（:883-885）。
-    _horizontalCollision = result.hitX || result.hitZ;
-
     player.applyMove(result);
-    if (result.hitY) {
-      // 撞到顶面 ⇒ 竖直刻速度归零（原版 `move()` 拦住位移后不再积累下落速度）。
-      _vyTicks = 0;
-      player.velocity.y = 0;
+
+    // ⑤ restitute（Entity.java:793-795 → :851-853；restitution=0 ⇒ 清零）。
+    if (result.xCollision) v.x = 0;
+    if (result.zCollision) v.z = 0;
+    if (result.yCollision) v.y = 0;
+    // onGround（Entity.java:772-776：verticalCollisionBelow，本地权威恒评）。
+    player.onGround = result.yCollision && dy < 0;
+    _horizontalCollision = result.xCollision || result.zCollision;
+
+    // ⑥ 重力 + 摩擦（:2458-2460/:2472-2475）。
+    final movementY = v.y - gravityPerTick;
+    final friction = f * flyFriction; // blockFriction × airDrag(0.91)
+    v.x *= friction;
+    v.z *= friction;
+    v.y = movementY * verticalFrictionPerTick; // 0.98
+
+    // 对外暴露（格/秒口径，诊断/上行参考）。
+    player.velocity.setValues(v.x * 20.0, v.y * 20.0, v.z * 20.0);
+    _checkPenetration('walk');
+  }
+
+  /// **穿透探针**（TRACE 开启时生效；2026-10-11 实机"怼墙抽搐"取证）。
+  ///
+  /// 以服务器的口径自查（`isEntityCollidingWithAnythingNew`，
+  /// ServerGamePacketListenerImpl.java:1216-1231）：盒 deflated 1e-5 后与方块
+  /// 形状求交——若我们的预测落点穿透了任何方块，服务器必然拒绝并回拉（表现
+  /// 为原地抽搐）。打点带方块身份串，直接定位形状分歧的方块。
+  void _checkPenetration(String path) {
+    if (!kTracePenetrate) return;
+    // 双口径：
+    // - GATE：服务器 gate2 同口径（deflate 1e-5 后严格相交）——穿透 >1e-5 必被拒；
+    // - P0：零容差严格相交——专捕 0 < 穿透 ≤ 1e-5 的**微穿透**。深度量级直接
+    //   分流结论：~1e-13 = 精确贴面的浮点噪声（vanilla 行为，服务器不可能拒）；
+    //   ~1e-6 = 剪裁残差是真 bug（客户端碰撞没贴准）。
+    _checkPenetrationEps(path, 'GATE', 1.0E-5);
+    _checkPenetrationEps(path, 'P0', 0.0);
+  }
+
+  void _checkPenetrationEps(String path, String tag, double eps) {
+    final b = player.bounds;
+    final minX = b.minX + eps, maxX = b.x1 - eps;
+    final minY = b.minY + eps, maxY = b.maxY - eps;
+    final minZ = b.minZ + eps, maxZ = b.z1 - eps;
+    for (var by = minY.floor(); by <= maxY.floor(); by++) {
+      for (var bz = minZ.floor(); bz <= maxZ.floor(); bz++) {
+        for (var bx = minX.floor(); bx <= maxX.floor(); bx++) {
+          final shape = world.collisionShapeAt(bx, by, bz);
+          if (shape == null || shape.isEmpty) continue;
+          for (final box in shape.boxes) {
+            final wbx0 = box.minX + bx, wbx1 = box.maxX + bx;
+            final wby0 = box.minY + by, wby1 = box.maxY + by;
+            final wbz0 = box.minZ + bz, wbz1 = box.maxZ + bz;
+            if (minX < wbx1 && maxX > wbx0 && minY < wby1 && maxY > wby0 && minZ < wbz1 && maxZ > wbz0) {
+              // 穿透深度 = 三轴重叠中最小者（全精度）。
+              final ox = math.min(maxX, wbx1) - math.max(minX, wbx0);
+              final oy = math.min(maxY, wby1) - math.max(minY, wby0);
+              final oz = math.min(maxZ, wbz1) - math.max(minZ, wbz0);
+              // ignore: avoid_print
+              print('[PENETRATE$tag/$path] pos=(${player.position.x},'
+                  '${player.position.y},${player.position.z}) '
+                  'block=($bx,$by,$bz) ${world.blockIdentityAt(bx, by, bz)} '
+                  'depth=($ox,$oy,$oz)');
+            }
+          }
+        }
+      }
     }
-    // **着地判定用"脚下探针"而非 `hitY`**：`collision.move` 的 `hitY` 只在
-    // `dy < 0`（真的下沉）时才为真，站着不动 `dy == 0` ⇒ 永远撞不到 ⇒
-    // `onGround` 会在 true/false 间闪烁。`hasBlockBelow` 是独立探针（原版
-    // `Entity.groundState` 同义），站立不动时依然为真——这才是正确的口径。
-    final grounded = result.hasBlockBelow && _vyTicks <= 0;
-    if (grounded) {
-      // 稳定着地：竖直速度归零，避免残留 vy 影响下次起跳。
-      _vyTicks = 0;
-      player.velocity.y = 0;
-    }
-    player.onGround = grounded;
-    _advanceTickProgress();
   }
 
   /// 推进渲染插值进度（判据 `EntityRenderer.extractRenderState`，
@@ -394,29 +463,9 @@ class LocalPlayer {
   void _advanceTickProgress() {
     final accum = flying && _flyTickAccum > 0
         ? _flyTickAccum
-        : _verticalTickAccum;
+        : _walkTickAccum;
     player.tickProgress =
         (accum / tickSeconds).clamp(0.0, 1.0);
-  }
-
-  /// 推进一个刻的竖直运动学（REF 见 [PlayerMotion] 的时序注释）。
-  ///
-  /// 顺序严格照原版：**先按当前速度积分位置，再扣重力、乘阻力**。
-  /// 反过来做会让跳高掉到 0.9969 格（跳不上 1 格高方块）。
-  void _advanceVerticalTick(double jumpPower) {
-    // ① **位移**：原版此刻调`move()`，用的是**本刻未扣重力**的 vy（源码 2657）。
-    // 累加到 `_pendingVertical`，由本帧的下一次 `collision.move` **整块**结算。
-    _pendingVertical += _vyTicks;
-    // ② 扣重力（`travelInAir`：movementY -= getEffectiveGravity()`）
-    var vy = _vyTicks - gravityPerTick;
-    // ③ 乘竖直摩擦（`setDeltaMovement(... * verticalFriction)`）
-    vy *= verticalFrictionPerTick;
-    // 下落限速：`terminalVelocity` 是**下落**终端速度（负值，格/秒），换算成格/刻。
-    if (vy < terminalVelocity / 20.0) {
-      vy = terminalVelocity / 20.0;
-    }
-    _vyTicks = vy;
-    player.velocity.y = vy * 20.0; // 对外暴露仍用格/秒
   }
 
   /// 飞行固定步（REF: `LivingEntity.travelInAir` 空中分支 + `Player.travel`
@@ -498,8 +547,8 @@ class LocalPlayer {
         final forward = Vector3(-math.sin(player.yaw), 0, -math.cos(player.yaw));
         final right = Vector3(math.cos(player.yaw), 0, -math.sin(player.yaw));
         final dir = (forward * input.move.y + right * input.move.x).normalized();
-        _flyVelocity.x += dir.x * flySpeed;
-        _flyVelocity.z += dir.z * flySpeed;
+        _deltaMovement.x += dir.x * flySpeed;
+        _deltaMovement.z += dir.z * flySpeed;
       }
       // 竖直：判据 `LocalPlayer.java:833-845` —— **独立于水平**的一段：
       //   if (abilities.flying && isControlledCamera()) {
@@ -510,27 +559,27 @@ class LocalPlayer {
       // 它在 `super.aiStep()` 之前跑，**不经过** `getInputVector`，
       // 所以水平那套 `length > 1.0` 归一化不适用于竖直。
       if (inputYa != 0) {
-        _flyVelocity.y += inputYa * flyingSpeedPerTick;
+        _deltaMovement.y += inputYa * flyingSpeedPerTick;
       }
 
       // ② move：位移用**未扣重力、未乘摩擦**的速度（`deltaMovement` 原值）。
-      _flyVelocityThisTickX = _flyVelocity.x;
-      _flyVelocityThisTickY = _flyVelocity.y;
-      _flyVelocityThisTickZ = _flyVelocity.z;
+      _flyMoveThisTickX = _deltaMovement.x;
+      _flyMoveThisTickY = _deltaMovement.y;
+      _flyMoveThisTickZ = _deltaMovement.z;
 
       // travelInAir（2460/2474）：扣重力 → 乘竖直摩擦。水平同理 × 0.91（airDrag）。
-      _flyVelocity.y =
-          (_flyVelocity.y - gravityPerTick) * verticalFrictionPerTick;
-      _flyVelocity.x *= flyFriction;
-      _flyVelocity.z *= flyFriction;
+      _deltaMovement.y =
+          (_deltaMovement.y - gravityPerTick) * verticalFrictionPerTick;
+      _deltaMovement.x *= flyFriction;
+      _deltaMovement.z *= flyFriction;
 
       // ③ `Player.travel` 飞行收尾（Player.java:1398）：
       //   setDeltaMovement(y = originalMovementY * 0.6)
       // 逐字翻译——**不引入原版没有的 `Math.max`**。原版就是拿 ① 注入后的
       // 速度乘 0.6，之前自行解读成"max(injected, afterGravity)"会导致松手时
       // 速度被锁死（实测收敛到 0.0002，飞行变失重悬浮）。
-      _flyVelocity.y =
-          _flyVelocityThisTickY * flyVerticalRetain;
+      _deltaMovement.y =
+          _flyMoveThisTickY * flyVerticalRetain;
     }
 
     // 位移用**本刻未衰减**的速度（② `move(MoverType.SELF, deltaMovement)`），
@@ -538,9 +587,9 @@ class LocalPlayer {
     //
     // 原版一 tick 一次 `move()`，本实现同理（刻累加器在 `_step` 内推进）——
     // 刻内未跨刻的子步位移为 0，与"原版一个 tick 只move 一次"完全一致。
-    final vxPerTick = _flyVelocityThisTickX;
-    final vyPerTick = _flyVelocityThisTickY;
-    final vzPerTick = _flyVelocityThisTickZ;
+    final vxPerTick = _flyMoveThisTickX;
+    final vyPerTick = _flyMoveThisTickY;
+    final vzPerTick = _flyMoveThisTickZ;
     // 竖直位移**不在这里乘 dt**：原版 `super.travel` 的 `move()` 用的就是
     // `deltaMovement`（每刻位移），上面已按 `injected` 逐刻累加进
     // `_pendingVertical`，此处整块结算。早先误用 `vyPerSec * dt`，等于
@@ -550,24 +599,32 @@ class LocalPlayer {
       vxPerTick,
       vyPerTick,
       vzPerTick,
+      wasOnGround: player.onGround,
     );
-    _flyVelocityThisTickX = 0;
-    _flyVelocityThisTickY = 0;
-    _flyVelocityThisTickZ = 0;
-    // 原版 `Entity.move` 撞墙只拦位置、不改速度——**故这里不清零**。
-    //
-    // 暴露的速度是 `deltaMovement` 的原值：x/z 用 ③衰减**后**的值（本刻
-    // move 用的是衰减前、已存进 `_flyVelocityThisTick*`），y 用 `Player.travel`
-    // 收尾后的值（`originalMovementY × 0.6`）。×20 换算成格/秒供上层用。
+    _flyMoveThisTickX = 0;
+    _flyMoveThisTickY = 0;
+    _flyMoveThisTickZ = 0;
+    // restitute（Entity.java:793-795/:851-853，restitution=0 ⇒ 清零；本地玩家
+    // authoritative 恒跑）：撞墙清水平轴。**Y 不清**——`Player.travel` 飞行
+    // 收尾用 originalMovementY × 0.6（Player.java:1398-1399，original 是 move
+    // 前的值）覆盖竖直轴，与原版一致。
+    if (result.xCollision) _deltaMovement.x = 0;
+    if (result.zCollision) _deltaMovement.z = 0;
+    // 暴露的速度是 `deltaMovement` 的当前值（本刻 move 用的是衰减前、已存进
+    // `_flyMoveThisTick*` 的原值）。×20 换算成格/秒供上层用。
     player.velocity.setValues(
-      _flyVelocity.x * 20.0,
-      _flyVelocity.y * 20.0,
-      _flyVelocity.z * 20.0,
+      _deltaMovement.x * 20.0,
+      _deltaMovement.y * 20.0,
+      _deltaMovement.z * 20.0,
     );
     player.applyMove(result);
-    player.onGround = result.hitY && result.hasBlockBelow;
+    // 着地同行走口径（Entity.java:1146）：yCollision && dy<0，
+    // 只在竖直位移非零的结算点更新。
+    if (vyPerTick != 0) {
+      player.onGround = result.onGroundOf(vyPerTick);
+    }
     // 水平碰撞供加速状态机用（飞行疾跑撞墙同样停，:883-885）。
-    _horizontalCollision = result.hitX || result.hitZ;
+    _horizontalCollision = result.xCollision || result.zCollision;
     // 飞行态也要插帧（判据 `EntityRenderer.java:164` 对所有实体一律插值）。
     _advanceTickProgress();
   }
@@ -578,6 +635,4 @@ class LocalPlayer {
   /// 上一固定步结束时是否按住跳跃（只读诊断视图）。
   bool get wasJumping => _wasJumping;
 
-  /// 飞行速度（`格/刻`；与 [Player.velocity]的 `格/秒` 分开承载）。
-  final Vector3 _flyVelocity = Vector3.zero();
 }

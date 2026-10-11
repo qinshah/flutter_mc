@@ -49,7 +49,7 @@ void main() {
 
   test('微小位移（≤2.0E-4）不算 move，纯旋转发 Rot', () {
     reset();
-    player.position.setValues(1.0e-4, 0, 0); // 判据 :274 阈值内
+    player.setPos(1.0e-4, 0, 0); // 判据 :274 阈值内
     sync.tick(
       player: player,
       yawDeg: 179, // 转 1° ⇒ rot
@@ -63,7 +63,7 @@ void main() {
 
   test('位移+旋转同时变化发 PosRot', () {
     reset();
-    player.position.setValues(1, 0, 0);
+    player.setPos(1, 0, 0);
     sync.tick(
       player: player,
       yawDeg: 90,
@@ -95,7 +95,7 @@ void main() {
 
   test('move 后基准重置（:286-291）——同一位移不重复上报', () {
     reset();
-    player.position.setValues(1, 0, 0);
+    player.setPos(1, 0, 0);
     sync.tick(
       player: player,
       yawDeg: 180,
