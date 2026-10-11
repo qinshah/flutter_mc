@@ -95,6 +95,10 @@ Future<void> main(List<String> args) async {
         }
       case ChunkUnloaded():
         break;
+      case ViewGeometryChanged():
+        break; // 窗口几何更新（Center/Radius），探针不消费
+      case LevelChunksLoadStart():
+        break; // 出生区块流开始（就绪状态机用），探针不消费
       case TimeUpdated():
         break; // 服务器时间同步（约每秒一次），探针不消费
       case SectionChanged():

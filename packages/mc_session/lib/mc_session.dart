@@ -5,6 +5,8 @@
 /// "会活过重构"的主体——jar 桥落地时换掉版本包即可。
 library;
 
+export 'src/chunk_batch_size_calculator.dart';
+export 'src/client_chunk_cache.dart';
 export 'src/palette.dart';
 export 'src/remote_chunk.dart';
 export 'src/remote_session.dart';

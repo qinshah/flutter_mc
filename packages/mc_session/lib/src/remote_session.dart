@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:mc_nbt/mc_nbt.dart';
 import 'package:mc_protocol_v26_2/mc_protocol_v26_2.dart';
 import 'package:mc_wire/mc_wire.dart';
 
+import 'chunk_batch_size_calculator.dart';
+import 'client_chunk_cache.dart';
 import 'remote_chunk.dart';
 
 /// 位置包原始载荷探针（`--dart-define=TRACE_POS=true` 才输出；纯 Dart 用 print）。
@@ -15,6 +16,10 @@ const bool kTracePositions = bool.fromEnvironment('TRACE_POS');
 /// 是包没重复到达，还是我们取了不会前进的字段（26.2 的 SetTime 既有 gameTime
 /// 也有各 world clock 的 totalTicks/rate）。
 const bool kTraceTime = bool.fromEnvironment('TRACE_TIME');
+
+/// 区块流关键包收发探针（`--dart-define=TRACE_WIRE=true`）：
+/// 位置上行 / 传送确认 / 区块批次应答 / 列卸载——跑图冻结取证用（2026-10-11）。
+const bool kTraceWire = bool.fromEnvironment('TRACE_WIRE');
 
 /// 会话事件（会话 → 调用方；调用方在独立 isolate 里驱动 Game/渲染）。
 sealed class SessionEvent {
@@ -41,6 +46,28 @@ final class ChunkUnloaded extends SessionEvent {
 
   final int x;
   final int z;
+}
+
+/// 窗口几何更新（`SetChunkCacheCenter`/`SetChunkCacheRadius`；判据
+/// `ClientPacketListener.java:2314-2330`）。[radius] 是服务器语义半径
+/// （未做 +3 的存储环换算）。
+final class ViewGeometryChanged extends SessionEvent {
+  const ViewGeometryChanged({
+    required this.centerX,
+    required this.centerZ,
+    required this.radius,
+  });
+
+  final int centerX;
+  final int centerZ;
+  final int radius;
+}
+
+/// `GameEvent(LEVEL_CHUNKS_LOAD_START)`（event=13）：服务器开始下发出生区块
+/// （判据 `ClientPacketListener.java:1551-1553` →
+/// `LevelLoadTracker.loadingPacketsReceived()`）。
+final class LevelChunksLoadStart extends SessionEvent {
+  const LevelChunksLoadStart();
 }
 
 /// 方块变化（服务器权威回显；含段内批量与单方块）。
@@ -204,7 +231,23 @@ final class RemoteSession {
   DateTime _lastKeepAliveAt = DateTime.now();
   Timer? _keepAliveTimer;
 
-  final Map<String, RemoteChunkColumn> _chunks = {};
+  // —— 客户端区块存储（判据 `ClientChunkCache.java`，2026-10-11 接入）——
+  //
+  // 固定容量存储环：顶旧即卸、越界拒收、窗口几何由服务器 Center/Radius 包驱动。
+  // 初值取客户端请求视距（登录后服务器会立刻下发权威 Radius 包重建存储环，
+  // 判据 `ClientPacketListener.java:2314-2319`）。
+  late final ClientChunkCache _chunkCache = ClientChunkCache(
+    serverChunkRadius: viewDistance ?? 10,
+    onUnload: (chunk) => _events.add(ChunkUnloaded(chunk.x, chunk.z)),
+    onChunkLoaded: (x, z) {},
+  );
+
+  /// 服务器最近一次下发的视距（`SetChunkCacheRadius`；诊断/事件用）。
+  int _serverViewRadius = 10;
+
+  /// 批次期望速率计算器（判据 `ChunkBatchSizeCalculator.java`；
+  /// 应答语义 `ClientPacketListener.java:2356-2359`）。
+  final ChunkBatchSizeCalculator _chunkBatchSizeCalculator = ChunkBatchSizeCalculator();
 
   // registry 数据摄入（tasks 5.2；内容身份映射的数据源）
   final Map<String, List<RegistryEntry>> _registries = {};
@@ -411,21 +454,39 @@ final class RemoteSession {
       case final LevelChunkWithLight chunk:
         _handleChunk(chunk);
       case final ForgetLevelChunk f:
-        _chunks.remove('${f.x}/${f.z}');
-        _events.add(ChunkUnloaded(f.x, f.z));
+        if (kTraceWire) print('[WIRE<] forget (${f.x},${f.z})');
+        // 判据 ClientPacketListener.java:898-901 → chunkSource.drop。
+        // 卸载事件统一由存储环 onUnload 回调产生（forget/evict/shrink 同源，
+        // 列不存在时 drop 是无害空操作——不重复发事件）。
+        _chunkCache.drop(f.x, f.z);
       case final BlockUpdate b:
         _applyBlock(b.pos, b.stateId);
       case final SectionBlocksUpdate s:
         _applySection(s);
+      case final GameEvent g:
+        // `LEVEL_CHUNKS_LOAD_START`（event=13，判据
+        // `ClientboundGameEventPacket.java:27`）= 服务器开始下发出生区块——
+        // 原版用它驱动 `LevelLoadTracker.loadingPacketsReceived()`
+        // （`ClientPacketListener.java:1551-1553`）。透传给 app 壳的就绪状态机。
+        if (g.event == 13) {
+          _events.add(const LevelChunksLoadStart());
+        }
       case ChunkBatchStart():
-        break; // 批次开始（回应在 finished 时）
+        if (kTraceWire) print('[WIRE<] chunkBatchStart');
+        _chunkBatchSizeCalculator.onBatchStart(); // 判据 ClientPacketListener.java:2352-2354
       case final ChunkBatchFinished f:
-        // 回应 chunk batch（notes 1.2 #12）；desired 上限对齐原版客户端策略 500
+        if (kTraceWire) {
+          print('[WIRE<] chunkBatchFinished size=${f.batchSize}');
+        }
+        // 回应 chunk batch（判据 ClientPacketListener.java:2356-2359）：
+        // 期望速率 = 客户端计时（ChunkBatchSizeCalculator），
+        // MUST NOT 把服务器 batchSize 当 desired 回传（旧实现已废）。
+        _chunkBatchSizeCalculator.onBatchFinished(f.batchSize);
         _conn!.sendRaw(
           ProtocolPhase.play,
           PlayServerbound.chunkBatchReceived,
           (ByteWriter()
-                ..writeFloat(min(f.chunksPerTick.toDouble(), 500.0)))
+                ..writeFloat(_chunkBatchSizeCalculator.getDesiredChunksPerTick()))
               .takeBytes(),
         );
       case final PlayerAbilitiesIn a:
@@ -475,7 +536,28 @@ final class RemoteSession {
         // 玩家位置在 y=0..107 之间乱跳、服务器狂刷 moved too quickly（4.1 端到端实测）。
         // 本切片不渲染实体，故忽略；实体跟踪留作后续切片。
         break;
-      case final ViewDistanceUpdate _:
+      case final ViewDistanceUpdate v:
+        // `SetChunkCacheCenter`（id 94）/`SetChunkCacheRadius`（id 95）解码同型
+        // 但语义不同，按包 id 分流（判据 `ClientPacketListener.java:2314-2330`）：
+        // Center → `updateViewCenter(x, z)`；Radius → `updateViewRadius(r)`。
+        // 2026-10-11 前这两个包被直接丢弃 ⇒ 客户端无窗口概念，超视距列滞留。
+        if (pkt.packetId == PlayClientbound.setChunkCacheCenter) {
+          _chunkCache.updateViewCenter(v.a, v.b);
+          _events.add(ViewGeometryChanged(
+            centerX: v.a,
+            centerZ: v.b,
+            radius: _serverViewRadius,
+          ));
+        } else {
+          _serverViewRadius = v.a;
+          _chunkCache.updateViewRadius(v.a);
+          final (cx, cz) = _chunkCache.viewCenter;
+          _events.add(ViewGeometryChanged(
+            centerX: cx,
+            centerZ: cz,
+            radius: _serverViewRadius,
+          ));
+        }
       case null:
         break; // 未登记包（实体/库存/聊天等范围外）：跳过 + 已计数（remote-play spec）
       default:
@@ -492,8 +574,14 @@ final class RemoteSession {
     _selfEntityId = login.playerId;
     _ingestor = ChunkIngestor();
     _events.add(JoinedGame(login));
-    // ServerboundPlayerLoaded（notes 1.2 #11：60 tick 内不发则移动被静默忽略）
-    _conn!.sendRaw(ProtocolPhase.play, PlayServerbound.playerLoaded, Uint8List(0));
+    // **PlayerLoaded 不在这里发**（2026-10-11 修正）：原版客户端等
+    // `LevelLoadTracker.isLevelReady()`（玩家所在段编译完成 / 30s 超时）才发
+    // `notifyPlayerLoaded()`（判据 `ClientPacketListener.java:2656-2669`）。
+    // 服务端在收到它之前忽略一切移动（`hasClientLoaded`，
+    // `ServerGamePacketListenerImpl.java:2182`，60 tick 超时强制放行 :2201）。
+    // 旧实现登录即发 ⇒ 出生列还在路上服务端就接受我们的移动 ⇒ 客户端
+    // 飞进服务器侧实地 ⇒ collision-reject 弹跳（实测：开局 4 秒被拉回 50 次）。
+    // 发送时机由 app 壳的就绪状态机驱动（CmdPlayerLoaded）。
   }
 
   void _sendClientInformation() {
@@ -507,8 +595,12 @@ final class RemoteSession {
   void _handleChunk(LevelChunkWithLight packet) {
     try {
       final chunk = (_ingestor ?? ChunkIngestor()).ingest(packet);
-      _chunks['${packet.x}/${packet.z}'] = chunk;
-      _events.add(ChunkLoaded(chunk));
+      // 存储环收列（判据 `ClientChunkCache.java:97-119`）：越界拒收（返回 null，
+      // 不产生加载事件），被顶替的旧列经 onUnload 回调产生 ChunkUnloaded。
+      final stored = _chunkCache.replaceWithPacketData(chunk);
+      if (stored != null) {
+        _events.add(ChunkLoaded(chunk));
+      }
     } on FormatException catch (e) {
       // 单列摄入失败不拖垮会话（对齐 E-22「只丢这一列」的既有纪律）
       _events.add(SessionClosed('chunk 摄入失败（${packet.x}/${packet.z}）：${e.message}'));
@@ -518,14 +610,14 @@ final class RemoteSession {
   void _applyBlock(McBlockPos pos, int stateId) {
     final cx = pos.x >> 4;
     final cz = pos.z >> 4;
-    final chunk = _chunks['$cx/$cz'];
+    final chunk = _chunkCache.getChunk(cx, cz);
     if (chunk != null && chunk.applyBlockUpdate(pos, stateId)) {
       _events.add(BlockChanged(pos, stateId));
     }
   }
 
   void _applySection(SectionBlocksUpdate s) {
-    final chunk = _chunks['${s.sectionX}/${s.sectionZ}'];
+    final chunk = _chunkCache.getChunk(s.sectionX, s.sectionZ);
     if (chunk == null) return;
     if (!chunk.applySectionChanges(s.sectionX, s.sectionY, s.sectionZ, s.packedChanges)) {
       return;
@@ -587,11 +679,16 @@ final class RemoteSession {
     // teleportId = -1 下发**位置同步**包（不是传送）；不 ack 它就一直重发——实测每刻
     // 一条（约 22/s，100 秒 2203 条），并把客户端反复拉回服务器权威位置，表现为
     // 客户端位置狂跳、服务器日志刷 moved too quickly。
+    if (kTraceWire) {
+      print('[WIRE<] playerPosition id=${pos.teleportId} '
+          'pos=(${pos.x.toStringAsFixed(1)},${pos.y.toStringAsFixed(1)},${pos.z.toStringAsFixed(1)})');
+    }
     _conn!.sendRaw(
       ProtocolPhase.play,
       PlayServerbound.acceptTeleportation,
       (ByteWriter()..writeVarInt(pos.teleportId)).takeBytes(),
     );
+    if (kTraceWire) print('[WIRE>] acceptTeleport id=${pos.teleportId}');
 
     if (kTracePositions) {
       print('[POS] id=${pos.teleportId} flags=${pos.relativeFlags} '
@@ -671,6 +768,19 @@ final class RemoteSession {
   /// 原版用它设 `Attributes.MOVEMENT_SPEED`（`Player.java:639`）⇒ 决定**水平飞行**速度。
   double get walkingSpeed => _walkingSpeed;
 
+  /// 玩家加载完成上行（判据 `ClientPacketListener.java:2664-2669`
+  /// `notifyPlayerLoaded`：未发过才发；服务端收到即清 60-tick 加载超时、
+  /// 开始接受移动——`ServerGamePacketListenerImpl.java:2192` markClientLoaded）。
+  /// 发送时机由 app 壳的就绪状态机裁决（`LevelLoadTracker` 对应物）。
+  bool _playerLoadedSent = false;
+
+  void sendPlayerLoaded() {
+    if (!_playPhase || _closed) return;
+    if (_playerLoadedSent) return; // 原版 hasClientLoaded() 守卫的同义物
+    _playerLoadedSent = true;
+    _conn!.sendRaw(ProtocolPhase.play, PlayServerbound.playerLoaded, Uint8List(0));
+  }
+
   /// 飞行切换上报（REF: LocalPlayer.onUpdateAbilities → ServerboundPlayerAbilitiesPacket，
   /// 仅 1 字节 flying 位）。
   /// 本地玩家实体 id（登录包 `GameLogin.playerId`，PlayerCommand 用）。
@@ -705,6 +815,10 @@ final class RemoteSession {
     required bool horizontalCollision,
   }) {
     if (!_playPhase || _closed) return;
+    if (kTraceWire) {
+      print('[WIRE>] movePlayer v=$variant '
+          '(${x.toStringAsFixed(2)},${y.toStringAsFixed(2)},${z.toStringAsFixed(2)})');
+    }
     final MovePlayer packet;
     switch (variant) {
       case 0:

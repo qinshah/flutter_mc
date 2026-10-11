@@ -143,6 +143,12 @@ final class CmdCreativeModeSlot extends SessionCommand {
   final int count;
 }
 
+/// 玩家加载完成上行（app 壳就绪状态机裁决时机；判据
+/// `ClientPacketListener.java:2664-2669` notifyPlayerLoaded）。
+final class CmdPlayerLoaded extends SessionCommand {
+  const CmdPlayerLoaded();
+}
+
 /// 关闭会话。
 final class CmdClose extends SessionCommand {
   const CmdClose();
@@ -161,6 +167,9 @@ final class SessionHandle {
   void close() {
     commands.send(const CmdClose());
   }
+
+  /// 玩家加载完成上行（时机由 app 壳就绪状态机裁决；会话侧只发一次）。
+  void sendPlayerLoaded() => commands.send(const CmdPlayerLoaded());
 
   /// 飞行切换上报。
   void sendAbilities({required bool flying}) =>
@@ -347,6 +356,8 @@ Future<void> _entry(_IsolateConfig config) async {
           shift: c.shift,
           sprint: c.sprint,
         );
+      case CmdPlayerLoaded():
+        session.sendPlayerLoaded();
       case CmdClose():
         session.close();
     }
