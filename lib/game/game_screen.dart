@@ -1493,13 +1493,42 @@ UvRect _flatUv(int stateId, BlockFace face, String? textureKey) =>
 /// 缺失时退化为顶点色（承载面朝向明暗），观感有体积感但没有纹理。
 class _SectionMaterials {
   _SectionMaterials(TextureSource? atlas)
-      : opaque = _build(AlphaMode.opaque, atlas),
+      : opaque = _buildTerrain(atlas),
         cutout = _build(AlphaMode.mask, atlas),
         translucent = _build(AlphaMode.blend, atlas);
 
   final PhysicallyBasedMaterial opaque;
   final PhysicallyBasedMaterial cutout;
   final PhysicallyBasedMaterial translucent;
+
+  /// 地形（solid 层）材质：mask 0.1——**不是** `AlphaMode.opaque`。
+  ///
+  /// 环境差异（自由设计类别 1，flutter_scene 后端）：原版 solid 地形
+  /// （`RenderPipelines.SOLID_TERRAIN`，RenderPipelines.java:247）的
+  /// `terrain.fsh` 带 `#ifdef ALPHA_CUTOUT … discard` 但 solid 不定义该宏——
+  /// 原版靠**预乘 alpha 的场景合成**让共面 overlay（如 `grass_block` 第二
+  /// element 的 `grass_block_side_overlay`，211/256 texel 为 alpha=0）的透明
+  /// texel 不抹掉底下已画的基面（同见 terrain.fsh `apply_fog` 的
+  /// `FogColor * vec4(1,1,1,color.a)` 预乘语义）。flutter_scene 相反：
+  /// `flutter_scene_standard.frag:57` 的 opaque 模式把**贴图 alpha 原样写进
+  /// 场景色**、lit 着色器无 discard，最终按 premultiplied source-over 合成到
+  /// Flutter 背景上——alpha=0 的 texel 直接透出 Scaffold 底色（2026-10-17
+  /// 实机：草地侧面横向蓝条纹 = 精确 0xFF87CEEB）。故用 mask 丢弃近零 alpha
+  /// 还原"透明 texel 不得擦除基面"的可观感语义；阈值取原版
+  /// `ALPHA_CUTOUT_THRESHOLD_DEFAULT = 0.1F`（RenderPipelines.java:24，
+  /// `TRANSLUCENT_TERRAIN` 同用 0.1）。全不透明贴图（绝大多数方块）该
+  /// discard 等价无操作。
+  static PhysicallyBasedMaterial _buildTerrain(TextureSource? atlas) {
+    final material = PhysicallyBasedMaterial()
+      ..metallicFactor = 0.0
+      ..roughnessFactor = 1.0
+      // 有贴图时基色由贴图给（明暗交给光照），无贴图时退化为顶点色（面朝向明暗）。
+      ..vertexColorWeight = atlas == null ? 1.0 : 0.0;
+    if (atlas != null) material.baseColorTexture = atlas;
+    return material
+      ..alphaMode = AlphaMode.mask
+      ..alphaCutoff = 0.1;
+  }
 
   static PhysicallyBasedMaterial _build(AlphaMode mode, TextureSource? atlas) {
     final material = PhysicallyBasedMaterial()
