@@ -119,24 +119,33 @@ class BlockTextures {
   /// `facing=*` 走**不同模型**（几何也不同），故按 `variantKey` 取模型路径，
   /// 不能只取首个变体。
   ///
-  /// 带 `rotation` 的模型**不注入**几何（本网格器不支持旋转，见
+  /// **blockstate 变体旋转**（判据 `Variant.java:73-76` 的 `asModelState`）：
+  /// 变体的 `x`/`y`/`z` + `uvlock` 经 `BlockModelRotation` 复合成
+  /// [OctahedralGroup]，再按 `FaceBakery` 的烘焙路径旋转几何与 UV
+  /// （`bakeBlockstateRotation`）——楼梯 `half=top`（x=180）与 `facing`（y）
+  /// 由此生效。
+  ///
+  /// 带 `rotation` 的模型**不注入**几何（本网格器不支持元素级旋转，见
   /// `BlockGeometry.hasUnsupportedRotation`）——那些方块会退回整方块路径，
   /// **不会**静默按未旋转渲染。
   Future<Map<int, BlockGeometryMesh>> buildGeometryMap() async {
     final result = <int, BlockGeometryMesh>{};
     var rotationSkipped = 0;
-    // **按模型路径去重**：模型只有两千余个，而 state 有 32366 个——同一模型被
-    // 几百个 state 复用（所有石砖变体都指向 `block/stone_bricks`）。不缓存会
-    // 重复读同一 JSON 六万余次、耗时 6.4 秒（实测），足以卡住启动。
-    final byModel = <String, BlockGeometryMesh>{};
+    // **按「模型+变体旋转」去重**：模型只有两千余个，而 state 有 32366 个——
+    // 同一模型被几百个 state 复用（所有石砖变体都指向 `block/stone_bricks`）。
+    // 不缓存会重复读同一 JSON 六万余次、耗时 6.4 秒（实测），足以卡住启动。
+    final byVariant = <String, BlockGeometryMesh>{};
     final pending = <String, Future<BlockGeometryMesh?>>{};
 
-    Future<BlockGeometryMesh?> geometryOf(String modelPath) {
-      return pending.putIfAbsent(modelPath, () async {
+    Future<BlockGeometryMesh?> geometryOf(String cacheKey, BlockstateVariant v) {
+      return pending.putIfAbsent(cacheKey, () async {
         final parser = ModelGeometryParser((p) => _models.modelJson(p));
-        final geo = await parser.parse(modelPath);
+        final geo = await parser.parse(v.model.split(':').last);
         if (geo.isEmpty || geo.unsupportedRotation) return null;
-        return _toRenderGeometry(geo);
+        final rotation = BlockModelRotation.tryFromAngles(v.x, v.y, v.z,
+            uvLock: v.uvlock);
+        if (rotation == null) return null;
+        return _toRenderGeometry(bakeBlockstateRotation(geo, rotation));
       });
     }
 
@@ -145,13 +154,14 @@ class BlockTextures {
       final variantKey = _variantKeyOfIdentity(identity);
       final name = BlockSemanticsV262.blockNameOfStateIdentity(identity);
       if (name.isEmpty || name == 'unknown') continue;
-      final modelPath = await _models.modelPathForVariant(
+      final variant = await _models.variantFor(
         'minecraft:$name',
         variantKey,
       );
-      if (modelPath == null) continue;
-      final key = modelPath.split(':').last;
-      final cached = byModel[key];
+      if (variant == null) continue;
+      final key = '${variant.model.split(':').last}'
+          '|${variant.x}|${variant.y}|${variant.z}|${variant.uvlock}';
+      final cached = byVariant[key];
       if (cached != null) {
         if (cached == BlockGeometryMesh.none) {
           rotationSkipped++;
@@ -160,15 +170,15 @@ class BlockTextures {
         }
         continue;
       }
-      final mesh = await geometryOf(key);
+      final mesh = await geometryOf(key, variant);
       if (mesh == null) {
         // 无几何、或带 rotation（本网格器不支持旋转 ⇒ 显式回退整方块，
         // **MUST NOT 静默按未旋转渲染**，见 BlockGeometryMesh 文档）。
-        byModel[key] = BlockGeometryMesh.none;
+        byVariant[key] = BlockGeometryMesh.none;
         rotationSkipped++;
         continue;
       }
-      byModel[key] = mesh;
+      byVariant[key] = mesh;
       result[entry.key] = mesh;
     }
     _geometryRotationSkipped = rotationSkipped;
@@ -204,6 +214,9 @@ class BlockTextures {
                       v1: b.uvs[i].v1,
                       u2: b.uvs[i].u2,
                       v2: b.uvs[i].v2,
+                      // 模型纹理变量（`CuboidFace.texture`）：烘焙旋转时保持
+                      // 不变（判据 CuboidFace.java:37），供 uvFor 直查。
+                      texture: b.textures[i].isEmpty ? null : b.textures[i],
                     ),
                 ],
               ))
@@ -215,7 +228,7 @@ class BlockTextures {
   /// `minecraft:oak_slab[type=top]` → `type=top`（blockstate `variants` 的键）。
   ///
   /// 身份串的属性顺序按官方 data generator 的输出稳定，直接以原样作键查表；
-  /// 查不到时 [BlockModels.modelPathForVariant] 会退回首变体。
+  /// 查不到时 [BlockModels.variantFor] 会退回首变体。
   static String? _variantKeyOfIdentity(String identity) {
     final lb = identity.indexOf('[');
     final rb = identity.lastIndexOf(']');
@@ -268,7 +281,12 @@ class BlockTextures {
   int _fallbackHits = 0;
 
   /// 网格器注入点。**永不返回 null**（网格器签名非空），未知方块/缺贴图时兜底。
-  UvRect uvFor(int stateId, BlockFace face) {
+  ///
+  /// [textureKey] 是该面的**模型纹理变量**（`CuboidFace.texture`，如 `all`/
+  /// `side`/`top`）；非 null 时**直查**模型 `textures` 映射（判据 `ModelBakery`
+  /// 的变量解析——纹理绑定跟随面而非朝向，blockstate 旋转后面方向变了、
+  /// 变量不变），查不到再退按朝向的键链。
+  UvRect uvFor(int stateId, BlockFace face, String? textureKey) {
     final name = BlockSemanticsV262.blockNameOf(stateId);
     final byKey = _byState.putIfAbsent(stateId, () {
       final known = _byBlock[name];
@@ -277,6 +295,15 @@ class BlockTextures {
       return known;
     });
     if (byKey != null) {
+      if (textureKey != null) {
+        final direct = byKey[textureKey];
+        if (direct != null) {
+          final sprite = _atlas.sprite(direct);
+          if (sprite != null) {
+            return UvRect(sprite.minU, sprite.minV, sprite.maxU, sprite.maxV);
+          }
+        }
+      }
       for (final key in _keysFor(face)) {
         final path = byKey[key];
         if (path == null) continue;

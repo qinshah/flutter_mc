@@ -8,5 +8,12 @@ library;
 
 export 'src/atlas_uv.dart';
 export 'src/block_geometry.dart';
+export 'src/block_math.dart';
+export 'src/block_model_rotation.dart';
 export 'src/block_models.dart';
+export 'src/direction.dart';
+export 'src/face_bakery.dart';
+export 'src/face_info.dart';
+export 'src/octahedral_group.dart';
+export 'src/symmetric_group3.dart';
 export 'src/vanilla_pack.dart';

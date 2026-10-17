@@ -67,7 +67,8 @@ BlockGeometryMesh toMeshGeometry(res.BlockGeometry src) {
   );
 }
 
-UvRect _uv(int stateId, BlockFace face) => const UvRect(0, 0, 1, 1);
+UvRect _uv(int stateId, BlockFace face, String? textureKey) =>
+    const UvRect(0, 0, 1, 1);
 
 /// 用给定几何网格化单个方块，返回非空层的数据。
 ChunkMeshData meshOne(BlockGeometryMesh geometry, {int state = 1}) {

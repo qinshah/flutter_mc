@@ -55,7 +55,7 @@ class _BlockIconState extends State<BlockIcon> {
       child: CustomPaint(
         painter: _SpritePainter(
           atlas: _cachedAtlas,
-          uv: widget.textures?.uvFor(widget.stateId, BlockFace.up),
+          uv: widget.textures?.uvFor(widget.stateId, BlockFace.up, null),
         ),
       ),
     );

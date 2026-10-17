@@ -30,6 +30,22 @@
       半砖 ⇒ 只生成下半 2 个面
 - [ ] 2.5 真机：竹子呈细柱、半砖/楼梯形态正确
 
+### 2A. blockstate 变体旋转烘焙（2026-10-17 补：楼梯 half/facing 形态修复）
+
+- [x] 2A.1 `mc_resource`：variantFor 解析变体 `x`/`y`/`z`/`uvlock`
+      （判据 `Variant.java:61-76` + `Quadrant.CODEC`）
+- [x] 2A.2 `mc_resource`：逐行翻译 `SymmetricGroup3` / `OctahedralGroup` /
+      `BlockMath` / `FaceInfo` / `BlockModelRotation` / `FaceBakery`
+      （顶点旋转 + uvlock UV + `recalculateWinding`；identity 短路照抄
+      `FaceBakery.java:144`；转置情形兜底登记 progress.md）
+- [x] 2A.3 `mc_render` + app 壳：`BoxFace.texture` 纹理变量直查
+      （判据 `CuboidFace.java:37` texture 不随旋转改变）+
+      `buildGeometryMap` 接 variant+bake
+- [x] 2A.4 单测黄金值：`face_bakery_test.dart`（uvlock 链 m=(1−v,u)/(1−u,1−v)、
+      转置兜底、楼梯 y90/x180 变体端到端）+ analyze/test 全绿
+      （mc_resource 44 / mc_render 20 / app 105）
+- [ ] 2A.5 真机：楼梯 half=top / facing 四朝向屋顶形态与原版一致
+
 ## 3. C — 面剔除随之精确
 
 - [ ] 3.1 `hidesNeighbors` 与面剔除改用真实 AABB：半砖/薄皮不遮整格邻居

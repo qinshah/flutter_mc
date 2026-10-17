@@ -26,6 +26,7 @@ class BoxFace {
     required this.v1,
     required this.u2,
     required this.v2,
+    this.texture,
   });
 
   /// 面朝向。取值与 [BlockFace] 的名字一致（`'down'|'up'|'north'|'south'|'west'|'east'`），
@@ -34,6 +35,15 @@ class BoxFace {
 
   /// UV 矩形（0..1，纹理空间；已按 `FaceBakery.java:44-47` 做 min/max 规整）。
   final double u1, v1, u2, v2;
+
+  /// 该面引用的**模型纹理变量**（模型 JSON 里 `faces[].texture` 去掉 `#`，
+  /// 如 `all`/`side`/`top`）。
+  ///
+  /// 判据：`CuboidFace.texture` 是面的属性、烘焙时不随 blockstate 旋转改变
+  /// （`CuboidFace.java:37`；`ModelBakery` 用模型的 `textures` 映射把变量解析
+  /// 成 Sprite）。为 null 时（整方块快速路径等无变量来源处）由调用方退回
+  /// 按朝向的键链解析。
+  final String? texture;
 }
 
 /// 一个 AABB 元素（模型 `elements[]` 的一项）。

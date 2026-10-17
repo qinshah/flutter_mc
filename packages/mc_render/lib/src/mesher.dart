@@ -135,7 +135,7 @@ ChunkMesh meshSection(
   SectionView section,
   SectionNeighbors neighbors, {
   required MeshSemantics semantics,
-  required UvRect Function(int stateId, BlockFace face) uvFor,
+  required UvRect Function(int stateId, BlockFace face, String? textureKey) uvFor,
 }) {
   if (section.isEmpty) return const ChunkMesh();
 
@@ -352,7 +352,8 @@ class _LayerBuilder {
 }
 
 /// 面贴图选择（原版 `BlockFaces` 口径：上/下取 top/bottom，侧面统一 side）
-/// 由 `uvFor` 注入方负责——网格器只把 `(stateId, face)` 原样转交。
+/// 由 `uvFor` 注入方负责——网格器只把 `(stateId, face)` 原样转交
+/// （整方块路径无纹理变量来源，textureKey 传 null）。
 void _emitFace(
   Map<RenderLayer, _LayerBuilder> builders,
   RenderLayer layer,
@@ -362,10 +363,10 @@ void _emitFace(
   int lx,
   int ly,
   int lz,
-  UvRect Function(int stateId, BlockFace face) uvFor,
+  UvRect Function(int stateId, BlockFace face, String? textureKey) uvFor,
 ) {
   final builder = builders.putIfAbsent(layer, _LayerBuilder.new);
-  final uv = uvFor(state, face);
+  final uv = uvFor(state, face, null);
   final shade = _shadeFor(face);
   final offset = _offsets[face]!;
   final corners = _corners[face]!;
@@ -412,7 +413,7 @@ void _emitBoxes(
   int lx,
   int ly,
   int lz,
-  UvRect Function(int stateId, BlockFace face) uvFor,
+  UvRect Function(int stateId, BlockFace face, String? textureKey) uvFor,
 ) {
   final builder = builders.putIfAbsent(layer, _LayerBuilder.new);
   for (final box in geometry.boxes) {
@@ -421,7 +422,9 @@ void _emitBoxes(
       // 模型未声明的面已在解析侧过滤；这里再兜一层，避免脏数据落到 _faceByName
       // 的 null 分支后静默画错面。
       if (dir == null) continue;
-      final sprite = uvFor(state, dir);
+      // 纹理变量优先（判据 CuboidFace.java:37：texture 是面的属性，不随
+      // blockstate 旋转改变）；null 时由 uvFor 退回按朝向的键链。
+      final sprite = uvFor(state, dir, face.texture);
       final shade = _shadeFor(dir);
 
       // 该面在 box 上的 4 个角（世界右手系，法线朝外，逆时针），格式与
@@ -520,10 +523,10 @@ void _emitCross(
   int lx,
   int ly,
   int lz,
-  UvRect Function(int stateId, BlockFace face) uvFor,
+  UvRect Function(int stateId, BlockFace face, String? textureKey) uvFor,
 ) {
   final builder = builders.putIfAbsent(layer, _LayerBuilder.new);
-  final uv = uvFor(state, BlockFace.north); // 十字植物取侧面语义
+  final uv = uvFor(state, BlockFace.north, null); // 十字植物取侧面语义
   const shade = 1.0;
 
   void quad(List<List<double>> corners, List<double> normal) {

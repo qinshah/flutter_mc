@@ -76,14 +76,17 @@ class BlockModels {
   Future<String?> modelJson(String modelPath) =>
       _pack.readString('models/${_stripNs(modelPath)}.json');
 
-  /// 按 **state 变体**解析模型路径（形如 `block/oak_slab_top`）。
+  /// 按 **state 变体**解析模型路径与旋转（形如 `block/oak_slab_top`）。
   ///
   /// [variantKey] 是 blockstate `variants` 的键（如 `type=top`）；传 null 时取
   /// 首个变体。半砖/楼梯这类**同一方块不同变体走不同模型**（几何也不同），
   /// 故几何解析必须按变体来，不能只取首个。
   ///
-  /// 判据：`blockstates/*.json` 的 `variants` 结构（值可以是单模型或模型数组）。
-  Future<String?> modelPathForVariant(String blockId, String? variantKey) async {
+  /// 判据：`client.renderer.block.dispatch.Variant`（`Variant.java:12-16` 的
+  /// `model` + `SimpleModelState` 的 `x`/`y`/`z`/`uvlock`，`Variant.java:61-71`；
+  /// 角度按 `Quadrant.CODEC` 只认 0/90/180/270 的正余数，`Quadrant.java:14-21`）。
+  /// `multipart` 形态的 `apply` 同样可带旋转（取首个 apply 的简化口径不变）。
+  Future<BlockstateVariant?> variantFor(String blockId, String? variantKey) async {
     final name = blockId.split(':').last;
     final stateText = await _pack.readString('blockstates/$name.json');
     if (stateText == null) return null;
@@ -97,29 +100,47 @@ class BlockModels {
       } else {
         entry = variants.values.first;
       }
-      return _modelOfVariantEntry(entry);
+      if (entry is List) entry = entry.first; // 随机变体：取首个（简化）
+      return _variantOfEntry(entry);
     }
     final multipart = state['multipart'];
     if (multipart is List && multipart.isNotEmpty) {
       final first = multipart.first;
-      if (first is Map<String, dynamic>) return _modelOfVariantEntry(first);
+      if (first is Map<String, dynamic>) {
+        return _variantOfEntry(first['apply']);
+      }
     }
     return null;
   }
 
-  /// `variants` 的值 → 模型路径（值可能是单模型对象或模型对象数组，取首个）。
-  static String? _modelOfVariantEntry(Object? entry) {
-    if (entry is Map<String, dynamic>) {
-      final m = entry['model'];
-      if (m is String) return m;
-      if (m is List) {
-        final first = m.whereType<Map<String, dynamic>>().toList();
-        if (first.isNotEmpty) return first.first['model'] as String?;
-      }
-      final apply = entry['apply'];
-      if (apply is Map<String, dynamic>) return _modelOfVariantEntry(apply);
-    }
-    return null;
+  /// 变体条目 → [BlockstateVariant]（模型缺失/角度非法返回 null）。
+  static BlockstateVariant? _variantOfEntry(Object? entry) {
+    if (entry is! Map<String, dynamic>) return null;
+    final model = entry['model'];
+    if (model is! String) return null;
+    int? x = _quadrantDegrees(entry['x']);
+    int? y = _quadrantDegrees(entry['y']);
+    int? z = _quadrantDegrees(entry['z']);
+    if (x == null || y == null || z == null) return null;
+    return BlockstateVariant(
+      model: model,
+      x: x,
+      y: y,
+      z: z,
+      uvlock: entry['uvlock'] == true,
+    );
+  }
+
+  /// `Quadrant.CODEC`（`Quadrant.java:14-21`）：正余数 0/90/180/270，
+  /// 其余非法（返回 null ⇒ 整个变体解析失败，同原版 blockstate 解析报错）。
+  static int? _quadrantDegrees(Object? json) {
+    if (json == null) return 0; // optionalFieldOf 默认 R0
+    if (json is! int) return null;
+    final m = json % 360;
+    return switch (m) {
+      0 || 90 || 180 || 270 => m,
+      _ => null,
+    };
   }
 
   /// 该方块的模型是否**十字面片**（cross）。
@@ -207,4 +228,33 @@ class BlockModels {
     if (ref == null) return value;
     return _interpolate(ref, textures, depth + 1);
   }
+}
+
+/// 一个 blockstate 变体条目的纯数据（判据
+/// `client.renderer.block.dispatch.Variant.java:12-16` +
+/// `Variant.SimpleModelState`，`Variant.java:61-71`）。
+class BlockstateVariant {
+  const BlockstateVariant({
+    required this.model,
+    required this.x,
+    required this.y,
+    required this.z,
+    required this.uvlock,
+  });
+
+  /// 模型路径（形如 `block/oak_stairs`）。
+  final String model;
+
+  /// 变体旋转角（度，`Quadrant` 正余数 0/90/180/270）。
+  final int x;
+  final int y;
+  final int z;
+
+  /// `uvlock`（UV 世界锁定，判据 `FaceBakery.java:85` 的
+  /// `inverseFaceTransformation` 路径）。
+  final bool uvlock;
+
+  @override
+  String toString() =>
+      'BlockstateVariant($model, x=$x, y=$y, z=$z, uvlock=$uvlock)';
 }

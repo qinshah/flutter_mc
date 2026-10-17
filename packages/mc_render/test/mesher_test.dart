@@ -17,7 +17,8 @@ class FakeSection implements SectionView {
 
 const _semantics = BlockSemanticsV262();
 
-UvRect _uv(int stateId, BlockFace face) => const UvRect(0, 0, 1, 1);
+UvRect _uv(int stateId, BlockFace face, String? textureKey) =>
+    const UvRect(0, 0, 1, 1);
 
 void main() {
   test('单元块：24 顶点 36 索引，z 镜像与明暗正确', () {
@@ -125,7 +126,8 @@ void main() {
 
   test('UV 快照：UV 由注入的面→矩形函数决定，翻轴按面修正', () {
     // 各面给互不相同的矩形，锁住「取哪个面」与「矩形→顶点」两步映射。
-    UvRect uvByFace(int stateId, BlockFace face) => switch (face) {
+    UvRect uvByFace(int stateId, BlockFace face, String? textureKey) =>
+        switch (face) {
           BlockFace.east || BlockFace.west => const UvRect(0.5, 0.0, 0.75, 0.25),
           BlockFace.north || BlockFace.south => const UvRect(0.75, 0.0, 1.0, 0.25),
           BlockFace.up => const UvRect(0.0, 0.0, 0.25, 0.25),
@@ -146,7 +148,7 @@ void main() {
   test('UV 注入契约：网格器把 (stateId, 面) 原样转交，单块问六个面各一次', () {
     final asked = <(int, BlockFace)>[];
     meshSection(FakeSection()..set(0, 0, 0, 1), const SectionNeighbors(),
-        semantics: _semantics, uvFor: (stateId, face) {
+        semantics: _semantics, uvFor: (stateId, face, _) {
       asked.add((stateId, face));
       return const UvRect(0, 0, 1, 1);
     });

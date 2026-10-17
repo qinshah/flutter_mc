@@ -1480,7 +1480,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 }
 
 /// 无贴图时的占位 UV：整图（配合顶点色看不出错乱，只是"没有纹理"）。
-UvRect _flatUv(int stateId, BlockFace face) => const UvRect(0, 0, 1, 1);
+UvRect _flatUv(int stateId, BlockFace face, String? textureKey) =>
+    const UvRect(0, 0, 1, 1);
 
 /// 一个段的三层共享材质。
 ///
