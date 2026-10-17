@@ -1,8 +1,9 @@
 # 总体进度与翻译债清单
 
 > 凡原版（`mc-sources/minecraft-26.2`）**有 Java 实现**，而本仓标为"简化 / 占位 / 未实现 /
-> TODO"之处，都登记在此。**这些不是"自由设计"** —— 自由设计仅限两类环境差异：
-> 3D 渲染后端（flutter_scene）与输入事件采集（Flutter 组件）。
+> TODO"之处，都登记在此。**这些不是"自由设计"** —— 自由设计仅限三类环境差异：
+> 3D 渲染后端（flutter_scene）、输入事件采集（Flutter 组件）、运行时宿主（JVM 托管）。
+> 其中"运行时宿主"**只豁免"承载方式"**，被托管物自身的差异仍按翻译债登记（见第 14 项）。
 > 见能力 `translation-debt`（`openspec/specs/translation-debt/spec.md`）。
 >
 > **口径**：按大类分组，每债一条 checkbox —— **未勾选 = 未完成**；补齐后勾选保留作记录。
@@ -148,6 +149,48 @@
   OctahedralGroup.java:34-42/:65-73）从 NORTH 基准旋出四向 map，
   StairBlock.java:40-48 逐行对应；`Shapes.or` 补极大盒合并对齐原版
   离散体素集的吞并语义）
+
+---
+
+## 14. 服务端本体：未翻译，改为外部托管（影响范围·大，2026-10-17 登记）
+
+> 本项为 change `local-server-host` 登记。**"运行时宿主"（JVM 托管）只豁免"承载方式"**，
+> 不豁免被托管物：下面这些原版有 Java、本仓不翻译而改为外部运行的部分，仍是翻译债。
+
+- [ ] 服务端本体未翻译，改为托管外部原版系服务端产物（Paper 26.2）
+  - 原版：`net/minecraft/server/MinecraftServer.java`、`net/minecraft/server/dedicated/DedicatedServer.java`、
+    `net/minecraft/server/Main.java`、`net/minecraft/server/Eula.java`，以及服务端侧的
+    世界生成 / 光照 / tick / 实体 AI / 区块 IO / 服务端协议方向（`server/**`、`world/**`
+    的服务端取值路径）
+  - 我们：不翻译，改为在应用私有目录托管外部 Java 服务端（见能力 `local-server-host`）；
+    承载方式属第三类自由设计"运行时宿主"，判据见 `AGENTS.md`
+  - 后果：服务器行为由所托管的产物决定；版本必须与客户端锚点同版，产物缺失即该功能不可用
+  - 备注：本项**不是**"补齐计划"，而是"确认不做翻译"的登记——如日后改为 Dart 侧翻译，
+    本项转为待还债
+
+---
+
+## 15. 单机 ESC 暂停/继续 与 世界列表屏的两处省略（影响正确性/完整性·小，2026-10-18 登记）
+
+> 本项为 change `local-server-host` 登记。用户明确"单机 ESC 同步暂停/继续"本期可遗留。
+
+- [ ] 单机 ESC 暂停未翻译（原版暂停的是**内嵌服务端**的 tick，不只是客户端）
+  - 原版：`IntegratedServer.java:147-160` —— `paused = Minecraft.isPaused() || 玩家列表为空`，
+    暂停时走 `tickPaused()`（`:188`，只推进必要系统）；客户端侧 `Minecraft.pauseGame`
+    （`Minecraft.java:1670`）/`isPaused`（`:2697`）。
+  - 我们：本地服务端是**外部托管进程**（见第 14 项），ESC 目前只影响客户端渲染，
+    服务端照常 tick（世界仍在跑）。
+  - 建议还债路径：经 RCON/管理服务器下发 `tick freeze` / `tick unfreeze`
+    （判据 `TickCommand.java:52-53`、`:109-128` 的 `setFreeze` →
+    `ServerTickRateManager.setFrozen`），在 `/game` 的 ESC 菜单开关时同步下发。
+- [ ] `SelectWorldScreen` / `EditWorldScreen` 的若干省略（本期未做）
+  - 原版 `SelectWorldScreen.java:55`（搜索框 `selectWorld.search`）、`:98-101`
+    （「重新创建」`selectWorld.recreate`）。
+  - 原版 `EditWorldScreen.java:42/77`（重置图标）、`:43/81`（打开文件夹）、
+    `:44/84`（备份）、`:45/88`（备份文件夹）、`:46/102`（优化世界）。
+  - 我们：`lib/screens/worldselection/select_world_screen.dart` 与
+    `edit_world_screen.dart` 未实现上述项（列表条目少；"重新创建"对托管实例是破坏性操作，
+    且改名已覆盖原版该屏的主体语义——世界生成参数本就不能在编辑屏改）。
 
 ---
 

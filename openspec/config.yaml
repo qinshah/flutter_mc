@@ -6,14 +6,16 @@ schema: spec-driven
 # Keep general project documentation and discoverable codebase facts out.
 
 context: |
-  flutter_mc：Minecraft 官方客户端的 Flutter 复刻，定位纯客户端——只连既有 MC 服务器，
-  用服务器数据渲染 3D 世界、上行玩家输入；不做单人玩法（无 world gen / 存档写入）。
+  flutter_mc：Minecraft 官方客户端的 Flutter 复刻，定位纯客户端——连既有 MC 服务器，
+  或在应用私有目录托管本机服务端；用服务器数据渲染 3D 世界、上行玩家输入。
+  Dart 侧不做单人玩法（无 world gen / 存档格式翻译）——这部分由托管的外部服务端承担。
   总纲：行为判据 = mc-sources/minecraft-26.2 官方源码，目标 Java→Dart 级忠实翻译；
-  唯三处自由设计——3D 渲染用 flutter_scene、玩家输入取自 Flutter、数据上行发服务器。
+  唯三处自由设计——3D 渲染用 flutter_scene、玩家输入取自 Flutter、运行时宿主（JVM 托管）；
+  数据上行、以及自行实现的控制面与配置读写不属于自由设计，必须逐行翻译。
   硬约束：packages/ 全纯 Dart（mc_ui 是唯一 Flutter 例外）；flutter_scene 只允许 app 壳 lib/ 使用；
   版本特定代码只在 mc_protocol_v<主>_<次> 形态包中，业务代码禁按版本号 if/switch 分支；
   mc-sources/ 只读、不入库、代码不得引用；Mojang 官方资产（jar 与提取产物）不入库；
-  网络仅连用户指定的 MC 服务器，无遥测。
+  网络仅连用户指定的 MC 服务器与本机托管的服务器，无遥测。
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
