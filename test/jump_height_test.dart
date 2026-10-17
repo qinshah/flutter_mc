@@ -232,6 +232,76 @@ void main() {
         reason: 'tickProgress 必须被推进，否则插值退化回物理位置');
   });
 
+  test('插帧：自由落体逐帧渲染位移单调（无锯齿）', () {
+    // 回归防护：曾用 tickProgress<=0 退化为原始位置——跨刻帧残差钳 0 时
+    // 返回**本刻已 travel 完的落点**，下一帧又从旧位置往回插 ⇒ 相机
+    // "跳到新位置→倒退→再前进"的 20Hz 锯齿（2026-10-17 实测"走/跳/落
+    // 像被抽帧"；飞行路径因残差恒正而幸免）。
+    // 原版 partialTick=0 渲染 xOld（EntityRenderer.java:164），序列单调连续。
+    final player = Player();
+    final controller = LocalPlayer(
+      world: JumpEmptyWorld(),
+      player: player,
+      abilities: Abilities(mayfly: true),
+    );
+    controller.flying = false;
+    player.setPos(0.5, 200.0, 0.5);
+
+    const dt = 1 / 60.0; // 3 子步/帧 ⇒ 每帧恰逢跨刻边界（复现残差钳 0）
+    final input = Input();
+    var prev = player.eyePosition.y;
+    var started = false;
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, input);
+      final eye = player.eyePosition.y;
+      final d = eye - prev;
+      prev = eye;
+      if (d < 0) started = true; // 落体启动
+      if (started && d > 1e-9) {
+        fail('下落中渲染位移出现倒退（锯齿）：frame=$i delta=$d');
+      }
+    }
+    expect(started, isTrue, reason: '60 帧内应已开始下落');
+  });
+
+  test('插帧：水平位移同样插值（三轴一律 lerp，不区分运动方向）', () {
+    // 回归防护：曾只插 Y、X/Z 原样 ⇒ 水平位移在渲染上是 20Hz 台阶——
+    // 走路/水平飞行像被抽帧（2026-10-17 实机：垂直飞行平滑、水平运动锯齿感）。
+    // 判据 `EntityRenderer.java:164-166`：x/y/z 三轴一律
+    // `Mth.lerp(partialTicks, xOld, getX())`（z 同 :166）。
+    final player = Player();
+    final controller = LocalPlayer(
+      world: JumpEmptyWorld(),
+      player: player,
+      abilities: Abilities(mayfly: true),
+    );
+    controller.flying = true;
+    player.setPos(0.5, 200.0, 0.5);
+    const dt = 1 / 120;
+    final input = Input()
+      ..move.y = 1.0 // 前进（水平位移）
+      ..jump = true;
+
+    // 物理台阶数 vs 渲染变化帧数（X 轴——此前完全无插值的轴）。
+    var physSteps = 0;
+    var prevPhys = player.position.x;
+    var renderFrames = 0;
+    var prevEye = player.eyePosition.x;
+
+    for (var i = 0; i < 60; i++) {
+      controller.tick(dt, input);
+      final phys = player.position.x;
+      if ((phys - prevPhys).abs() > 1e-9) physSteps++;
+      prevPhys = phys;
+      final eye = player.eyePosition.x;
+      if ((eye - prevEye).abs() > 1e-6) renderFrames++;
+      prevEye = eye;
+    }
+    expect(physSteps, lessThan(20), reason: '物理是 20Hz ⇒ 60 帧内约 10 步');
+    expect(renderFrames, greaterThan(physSteps * 2),
+        reason: 'X/Z 渲染须在物理台阶之间连续变化 ⇒ 水平位移不抽帧');
+  });
+
   test('插帧：跳跃态 tickProgress 在 (0,1) 内循环', () {
     // 回归防护：`tickProgress` 曾只有赋值点、无推进点 ⇒ 恒为 0、插帧形同虚设。
     final player = Player();

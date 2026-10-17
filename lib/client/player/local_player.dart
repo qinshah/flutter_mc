@@ -296,14 +296,26 @@ class LocalPlayer {
     _walkingStep(dt, input);
   }
 
+  /// 跨刻快照：当前落点成为本刻渲染插值的起点（三轴）。
+  ///
+  /// 判据 `Entity.setOldPos`（Entity.java:1824-1830，`xOld = x; yOld = y; …`），
+  /// 调用点对应 `ClientLevel.java:482/497` 每刻实体 tick 入口的
+  /// `setOldPosAndRot()`。
+  void _snapshotOldPos() {
+    player.xOld = player.position.x;
+    player.yOld = player.position.y;
+    player.zOld = player.position.z;
+  }
+
   /// 行走固定步：**每刻一次 travel 链**（原版 20Hz；与飞行路径同构——
   /// 刻内未跨刻的子步不产生位移，渲染插值由 [Player.tickProgress] 平滑）。
   void _walkingStep(double dt, Input input) {
     _walkTickAccum += dt;
     while (_walkTickAccum >= tickSeconds - 1e-9) {
       _walkTickAccum -= tickSeconds;
-      // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `EntityRenderer` 的 `xOld`）。
-      player.yOld = player.position.y;
+      // 跨刻 ⇒ 上一刻的落点成为插值起点（判据 `ClientLevel.java:482`：
+      // 每刻实体 tick 入口 `entity.setOldPosAndRot()`——三轴一并记录）。
+      _snapshotOldPos();
       _travelWalkingTick(input);
       // 新的一刻 ⇒ 允许再次注入跳跃初速（原版 `noJumpDelay` 是 10 刻冷却，
       // 本期只保证"每刻至多注入一次"）。
@@ -461,11 +473,9 @@ class LocalPlayer {
   /// 原版对**所有**实体一律插帧，不区分行走/跳跃/飞行 ⇒ 我们也 MUST 在
   /// 每条物理路径上推进，否则该状态在渲染上是 20Hz 台阶（表现为卡顿）。
   void _advanceTickProgress() {
-    final accum = flying && _flyTickAccum > 0
-        ? _flyTickAccum
-        : _walkTickAccum;
-    player.tickProgress =
-        (accum / tickSeconds).clamp(0.0, 1.0);
+    // 各物理路径推进各自的累加器（飞行时 _walkTickAccum 是陈值，不可读）。
+    final accum = flying ? _flyTickAccum : _walkTickAccum;
+    player.tickProgress = (accum / tickSeconds).clamp(0.0, 1.0);
   }
 
   /// 飞行固定步（REF: `LivingEntity.travelInAir` 空中分支 + `Player.travel`
@@ -503,9 +513,10 @@ class LocalPlayer {
     _flyTickAccum += dt;
     while (_flyTickAccum >= tickSeconds) {
       _flyTickAccum -= tickSeconds;
-      // 跨刻 ⇒ 上一刻落点成为插值起点（判据 `EntityRenderer.java:164` 的 `yOld`，
-      // 原版对飞行实体同样插帧）。
-      player.yOld = player.position.y;
+      // 跨刻 ⇒ 上一刻落点成为插值起点（判据 `ClientLevel.java:482`：
+      // 每刻实体 tick 入口 `entity.setOldPosAndRot()`——三轴一并记录；
+      // `EntityRenderer.java:164-166` 对飞行实体同样三轴插帧）。
+      _snapshotOldPos();
 
       // —— 逐字翻译 `LivingEntity.handleRelativeFrictionAndCalculateMovement` + `travelInAir`——
       //

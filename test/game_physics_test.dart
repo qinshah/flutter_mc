@@ -534,6 +534,12 @@ void main() {
     expect(player.bounds.centerX, closeTo(r.centerX, _f32Tol));
     expect(player.bounds.centerZ, closeTo(r.centerZ, _f32Tol));
     expect(player.bounds.maxY, closeTo(r.minY + 1.8, _f32Tol));
+    // 眼睛 = 插值位置 + 1.62；progress=0 时渲染的是 old（tick 前位置，
+    // EntityRenderer.java:164——恒 lerp，无 raw 退化分支）。快照后眼睛应
+    // 落在 minY + 1.62。
+    player.xOld = player.position.x;
+    player.yOld = player.position.y;
+    player.zOld = player.position.z;
     expect(player.eyePosition.y, closeTo(r.minY + 1.62, _f32Tol));
 
     // applyMove 只写位置，不动朝向与速度。
