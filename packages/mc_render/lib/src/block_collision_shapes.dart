@@ -9,15 +9,15 @@ import 'voxel_shape.dart';
 ///   四向臂厚 0.25 居中（CrossCollisionBlock.java:30-46 + Block.java:177-203；
 ///   FenceBlock.java:37 collisionHeight=1.5，玻璃板/铁栏杆族 1.0）
 /// - 半砖 column(16,0,8)/(16,8,16)（SlabBlock.java:35-36）
-/// - 楼梯（StairBlock.java:40-48）：OUTER = 底半 + facing∩left 象限；
-///   STRAIGHT = 底半 + facing 半边；INNER = 底半 + facing/left/right 三半边；
-///   half=top 整体 y 镜像
+/// - 楼梯（StairBlock.java:40-48）：NORTH 基准 OUTER/STRAIGHT/INNER 经
+///   `Shapes.rotate`（BLOCK_ROT_Y_90/180/270，见 `voxel_shape.dart`）旋出四向
+///   map，half=top 复合 INVERT_Y；getShape 分派 :76-89
 /// - 雪片 column(16,0,layers*2/16)（SnowLayerBlock.java:31）；地毯 1/16
 ///   （CarpetBlock.java:17）；耕地/土径 15/16（FarmLandBlock.java:36 /
 ///   DirtPathBlock.java:23）；灵魂沙 14/16（SoulSandBlock.java:15）
 ///
-/// **债**：未覆盖族兜底整块（原版是每方块白名单）；wall 的 tall/short 臂用
-/// 栅栏参数近似（1.5 高语义保持）；fence_gate 的 in_wall 高度未建模。
+/// **债**（progress.md 第 13 类）：未覆盖族兜底整块（原版是每方块白名单）；
+/// wall 的碰撞臂用栅栏参数近似；脚手架整块化（原版随 bottom/support 变化）。
 class BlockCollisionShapes {
   BlockCollisionShapes._();
 
@@ -298,106 +298,89 @@ class BlockCollisionShapes {
     return shape;
   }
 
-  /// `FenceGateBlock`：关闭 = 横贯门条（1.5 高）；开启 = 两端门柱。
-  /// 债：in_wall（墙内 1.0 高）未建模。
+  /// `FenceGateBlock.getCollisionShape`（FenceGateBlock.java:105-108）：
+  /// 开启 → 空；关闭 → `SHAPE_COLLISION`（:51 `column(16, 4, 0, 24)`：
+  /// 全宽、4/16 厚居中、1.5 高）。`in_wall` 只改视觉 shape（:47-50），不影响碰撞。
   static VoxelShape _fenceGate(Map<String, String> props) {
+    if (props['open'] == 'true') return VoxelShape([]);
     final facing = props['facing'] ?? 'north';
     final alongZ = facing == 'north' || facing == 'south';
-    if (props['open'] == 'true') {
-      return alongZ
-          ? VoxelShape.or(
-              VoxelShape.box(0, 0, 6, 2, 24, 10), VoxelShape.box(14, 0, 6, 16, 24, 10))
-          : VoxelShape.or(
-              VoxelShape.box(6, 0, 0, 10, 24, 2), VoxelShape.box(6, 0, 14, 10, 24, 16));
-    }
     return alongZ
         ? VoxelShape.box(0, 0, 6, 16, 24, 10)
         : VoxelShape.box(6, 0, 0, 10, 24, 16);
   }
 
-  /// `StairBlock`（判据 J6 + StairBlock.java:76-89 的分派：
-  /// STRAIGHT/OUTER_LEFT/INNER_RIGHT → map[facing]；INNER_LEFT →
-  /// map[getCounterClockWise(facing)]；OUTER_RIGHT → map[getClockWise(facing)]；
-  /// map 基准（NORTH）= 底半 + facing∩left 象限（OUTER）/ facing 半边（STRAIGHT）
-  /// / facing+left 半边（INNER）；half=top 整体 y 镜像）。
+  // —— 楼梯（StairBlock.java:40-48 的逐行对应：NORTH 基准形状经
+  //     Shapes.rotate 旋出四向 map，top 变体复合 INVERT_Y）——
+
+  /// `StairBlock.SHAPE_OUTER`（:40）：底半 + 西北象限。
+  static final VoxelShape _stairOuter = VoxelShape.or(
+    VoxelShape.column(16, 0, 8),
+    VoxelShape.box(0, 8, 0, 8, 16, 8),
+  );
+
+  /// `StairBlock.SHAPE_STRAIGHT`（:41）：OUTER ∪ rotate(OUTER, BLOCK_ROT_Y_90)。
+  static final VoxelShape _stairStraight = VoxelShape.or(_stairOuter, _stairOuter.rotateY90());
+
+  /// `StairBlock.SHAPE_INNER`（:42）：STRAIGHT ∪ rotate(STRAIGHT, BLOCK_ROT_Y_90)。
+  static final VoxelShape _stairInner = VoxelShape.or(_stairStraight, _stairStraight.rotateY90());
+
+  /// `StairBlock.SHAPE_BOTTOM_*`（:43-45）= `Shapes.rotateHorizontal`
+  /// （Shapes.java:390-403：N 基准、E = BLOCK_ROT_Y_90、S = BLOCK_ROT_Y_180、
+  /// W = BLOCK_ROT_Y_270）。
+  static final Map<String, VoxelShape> _stairBottomOuter = _rotateHorizontal(_stairOuter);
+  static final Map<String, VoxelShape> _stairBottomStraight = _rotateHorizontal(_stairStraight);
+  static final Map<String, VoxelShape> _stairBottomInner = _rotateHorizontal(_stairInner);
+
+  /// `StairBlock.SHAPE_TOP_*`（:46-48）= rotateHorizontal(shape, INVERT_Y)。
+  /// INVERT_Y 仅翻 y 轴，与 Y 旋转复合可交换 ⇒ 逐方向先旋转后 y 镜像精确等价。
+  static final Map<String, VoxelShape> _stairTopOuter = {
+    for (final e in _stairBottomOuter.entries) e.key: e.value.invertY(),
+  };
+  static final Map<String, VoxelShape> _stairTopStraight = {
+    for (final e in _stairBottomStraight.entries) e.key: e.value.invertY(),
+  };
+  static final Map<String, VoxelShape> _stairTopInner = {
+    for (final e in _stairBottomInner.entries) e.key: e.value.invertY(),
+  };
+
+  /// `StairBlock.getShape`（StairBlock.java:76-89）。
   static VoxelShape _stair(Map<String, String> props) {
     final facing = props['facing'] ?? 'north';
-    final isTop = props['half'] == 'top';
+    final isBottom = props['half'] != 'top';
     final shape = props['shape'] ?? 'straight';
-    final left = _leftOf(facing);
-    final right = _rightOf(facing);
 
-    // 上层半边集合（inner_left 缺 right 半边、inner_right 缺 left 半边）与
-    // outer 的单象限（facing ∩ side）。
-    final halfGrids = <String>[];
-    BlockBox? quadrant;
-    switch (shape) {
-      case 'outer_left':
-        quadrant = _quadrant(facing, left);
-      case 'outer_right':
-        quadrant = _quadrant(facing, right);
-      case 'inner_left':
-        halfGrids.addAll([facing, left]);
-      case 'inner_right':
-        halfGrids.addAll([facing, right]);
-      default:
-        halfGrids.add(facing);
-    }
+    // :79-83 的 map 选择（OUTER_LEFT 与 OUTER_RIGHT、INNER_LEFT 与
+    // INNER_RIGHT 同 map，方向差在 key 上）。
+    final (bottom, top) = switch (shape) {
+      'outer_left' || 'outer_right' => (_stairBottomOuter, _stairTopOuter),
+      'inner_left' || 'inner_right' => (_stairBottomInner, _stairTopInner),
+      _ => (_stairBottomStraight, _stairTopStraight),
+    };
 
-    // 下半块 base（bottom: y0..0.5 / top: y0.5..1）+ 上层梯级（y 镜像）。
-    final boxes = <BlockBox>[];
-    final (baseMinY, baseMaxY) = isTop ? (0.5, 1.0) : (0.0, 0.5);
-    boxes.add(BlockBox(0, baseMinY, 0, 1, baseMaxY, 1));
-    final (stepMinY, stepMaxY) = isTop ? (0.0, 0.5) : (0.5, 1.0);
+    // :85-89 的 map key：STRAIGHT/OUTER_LEFT/INNER_RIGHT → facing；
+    // INNER_LEFT → ccw；OUTER_RIGHT → cw。
+    final key = switch (shape) {
+      'inner_left' => _ccw(facing),
+      'outer_right' => _cw(facing),
+      _ => facing,
+    };
 
-    for (final dir in halfGrids) {
-      boxes.add(_halfGridBox(dir, stepMinY, stepMaxY));
-    }
-    if (quadrant != null) {
-      boxes.add(BlockBox(quadrant.minX, stepMinY, quadrant.minZ, quadrant.maxX, stepMaxY, quadrant.maxZ));
-    }
-    return VoxelShape(boxes);
+    return (isBottom ? bottom : top)[key]!;
   }
 
-  /// 沿轴半格（y 用给定的梯级范围）。
-  static BlockBox _halfGridBox(String dir, double minY, double maxY) => switch (dir) {
-        'north' => BlockBox(0, minY, 0, 1, maxY, 0.5),
-        'south' => BlockBox(0, minY, 0.5, 1, maxY, 1),
-        'west' => BlockBox(0, minY, 0, 0.5, maxY, 1),
-        _ => BlockBox(0.5, minY, 0, 1, maxY, 1),
+  /// `Shapes.rotateHorizontal`（Shapes.java:390-403）。
+  static Map<String, VoxelShape> _rotateHorizontal(VoxelShape north) => {
+        'north': north,
+        'east': north.rotateY90(),
+        'south': north.rotateY180(),
+        'west': north.rotateY270(),
       };
-
-  /// 两个方向半格的交象限：E/W 成员给 x 半边、N/S 成员给 z 半边。
-  static BlockBox _quadrant(String facing, String side) {
-    final facingIsX = facing == 'east' || facing == 'west';
-    final westDir = facingIsX ? facing : side;
-    final northDir = facingIsX ? side : facing;
-    final (x0, x1) = westDir == 'west' ? (0.0, 0.5) : (0.5, 1.0);
-    final (z0, z1) = northDir == 'north' ? (0.0, 0.5) : (0.5, 1.0);
-    return BlockBox(x0, 0, z0, x1, 1, z1);
-  }
 
   /// 脚手架（原版碰撞随 bottom/support 变化，首切片：整格半高柱——债）。
   static VoxelShape _scaffolding(Map<String, String> props) {
     return VoxelShape.full();
   }
-
-  static String _opposite(String dir) => switch (dir) {
-        'north' => 'south',
-        'south' => 'north',
-        'west' => 'east',
-        _ => 'west',
-      };
-
-  /// 面朝 [facing] 时的左侧（facing=north ⇒ 左 = west）。
-  static String _leftOf(String facing) => switch (facing) {
-        'north' => 'west',
-        'south' => 'east',
-        'west' => 'south',
-        _ => 'north',
-      };
-
-  static String _rightOf(String facing) => _opposite(_leftOf(facing));
 
   static String _nameOf(String identity) {
     final bracket = identity.indexOf('[');

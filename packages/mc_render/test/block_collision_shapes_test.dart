@@ -95,6 +95,54 @@ void main() {
     expect(base.maxY, 1.0);
   });
 
+  test('楼梯旋转方向：BLOCK_ROT_Y_* 复合（N→E 顺时针；Shapes.java:390-403）', () {
+    // outer_right（facing=north）key = cw(north) = east → rotate(OUTER, Y_90)：
+    // 西北象限 → 东北象限（x 0.5..1, z 0..0.5）。StairBlock.java:88/:40。
+    final outerRight = BlockCollisionShapes.shapeFor(
+        'minecraft:oak_stairs[facing=north,half=bottom,shape=outer_right,waterlogged=false]');
+    final q = outerRight.boxes.last;
+    expect(q.minX, closeTo(0.5, 1e-9), reason: 'outer_right 梯级在东北象限');
+    expect(q.maxX, closeTo(1.0, 1e-9));
+    expect(q.minZ, 0.0);
+    expect(q.maxZ, closeTo(0.5, 1e-9));
+
+    // inner_right（facing=north）：底半 + 北半 + 东半；并集 = 上层缺西南象限
+    // （原版 INNER = STRAIGHT ∪ rot90(STRAIGHT)，StairBlock.java:42；合并后
+    // 分解为半条，逐点采样验证并集）。
+    final innerRight = BlockCollisionShapes.shapeFor(
+        'minecraft:oak_stairs[facing=north,half=bottom,shape=inner_right,waterlogged=false]');
+    expect(innerRight.boxes, hasLength(3));
+    bool coversUpper(double x, double z) => innerRight.boxes.any((b) =>
+        b.minY == 0.5 && x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ);
+    expect(coversUpper(0.25, 0.25), isTrue, reason: '西北象限有梯级');
+    expect(coversUpper(0.75, 0.25), isTrue, reason: '东北象限有梯级');
+    expect(coversUpper(0.75, 0.75), isTrue, reason: '东南象限有梯级');
+    expect(coversUpper(0.25, 0.75), isFalse, reason: 'inner 缺西南象限');
+
+    // straight 四向：梯级半格随 facing（S = Y_180、W = Y_270）。
+    BlockBox stepOf(String facing) => BlockCollisionShapes.shapeFor(
+            'minecraft:oak_stairs[facing=$facing,half=bottom,shape=straight,waterlogged=false]')
+        .boxes
+        .last;
+    final south = stepOf('south');
+    expect(south.minZ, closeTo(0.5, 1e-9), reason: 'facing=south 梯级在南半');
+    expect(south.maxZ, closeTo(1.0, 1e-9));
+    final west = stepOf('west');
+    expect(west.minX, 0.0, reason: 'facing=west 梯级在西半');
+    expect(west.maxX, closeTo(0.5, 1e-9));
+
+    // half=top 的 outer：象限落到下半（INVERT_Y 复合，StairBlock.java:46）。
+    final topOuter = BlockCollisionShapes.shapeFor(
+        'minecraft:oak_stairs[facing=north,half=top,shape=outer_left,waterlogged=false]');
+    final tq = topOuter.boxes.last;
+    expect(tq.minY, 0.0);
+    expect(tq.maxY, closeTo(0.5, 1e-9));
+    expect(tq.minX, 0.0);
+    expect(tq.maxX, closeTo(0.5, 1e-9));
+    expect(tq.minZ, 0.0);
+    expect(tq.maxZ, closeTo(0.5, 1e-9));
+  });
+
   test('雪片：层高 0.125×n（判据 SnowLayerBlock.java:31）', () {
     expect(
       _maxY(BlockCollisionShapes.shapeFor('minecraft:snow[layers=1]')),
@@ -129,12 +177,13 @@ void main() {
     );
   });
 
-  test('栅栏门：关闭横贯、开启两端柱（债：in_wall 高度未建模）', () {
+  test('栅栏门：关闭横贯 1.5、开启碰撞为空（判据 FenceGateBlock.java:105-108）', () {
     final closed = BlockCollisionShapes.shapeFor(
         'minecraft:oak_fence_gate[facing=north,in_wall=false,open=false,powered=false]');
     expect(_maxY(closed), 1.5);
+    expect(closed.boxes, hasLength(1));
     final open = BlockCollisionShapes.shapeFor(
         'minecraft:oak_fence_gate[facing=north,in_wall=false,open=true,powered=false]');
-    expect(open.boxes, hasLength(2), reason: '开启只剩两端门柱');
+    expect(open.isEmpty, isTrue, reason: '开启的门不阻挡（getCollisionShape → empty）');
   });
 }
