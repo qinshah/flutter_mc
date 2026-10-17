@@ -1,9 +1,10 @@
-import 'dart:ui' show PlatformDispatcher;
+import 'dart:ui' show AppExitResponse, PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'platform/file_permission.dart';
+import 'platform/server_host/local_server_host.dart';
 import 'routes.dart';
 
 Future<void> main() async {
@@ -32,11 +33,47 @@ Future<void> main() async {
     DeviceOrientation.landscapeRight,
   ]);
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  // 本地服务器宿主初始化（根取应用私有目录）。失败不阻断启动：
+  // 缺少产物/目录时入口自行置灰（spec「缺产物不得导致构建或其余功能失败」）。
+  try {
+    await initLocalServerHost();
+  } catch (e) {
+    debugPrint('[LOCAL-SERVER-HOST] 初始化失败：$e');
+  }
   runApp(const FlutterMcApp());
 }
 
-class FlutterMcApp extends StatelessWidget {
+class FlutterMcApp extends StatefulWidget {
   const FlutterMcApp({super.key});
+
+  @override
+  State<FlutterMcApp> createState() => _FlutterMcAppState();
+}
+
+class _FlutterMcAppState extends State<FlutterMcApp> {
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // 应用退出时回收已启动的服务端实例（spec「MUST NOT 残留孤儿进程」）。
+    _lifecycle = AppLifecycleListener(onExitRequested: _onExitRequested);
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  Future<AppExitResponse> _onExitRequested() async {
+    try {
+      localServerManager.reapAll();
+    } catch (_) {
+      // 宿主未初始化（初始化失败路径）：无实例可回收。
+    }
+    return AppExitResponse.exit;
+  }
 
   @override
   Widget build(BuildContext context) {

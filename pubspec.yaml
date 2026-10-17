@@ -29,6 +29,10 @@ dependencies:
     path: packages/mc_session
   mc_protocol_v26_2:
     path: packages/mc_protocol_v26_2
+  # 原版系服务端控制面翻译件（server.properties / RCON / EULA），纯 Dart。
+  # 本地服务器宿主（lib/platform/server_host/）用它读配置与走 RCON 停止。
+  mc_server:
+    path: packages/mc_server
   # 渲染数据 / 资源抽象 / UI 组件三包骨架（实现见后续 change）。
   mc_render:
     path: packages/mc_render
@@ -70,6 +74,10 @@ flutter:
     - assets/vanilla/26_2/generated/
     - assets/vanilla/26_2/blockstates/
     - assets/vanilla/26_2/models/block/
+    # 本机托管的服务端 jar（构建期资产携带：本地放入、gitignore 不入库；缺失时构建仍
+    # 通过、本地服务器入口置灰并提示放置位置）。逐目录声明（Flutter 不递归子目录）。
+    # 后续改为"使用时下载"（FVM 式全局缓存 + 按实例 pin），切换时只换产物解析实现。
+    - assets/server/26_2/
     - flutter_scene_generated/
     - path: flutter_scene_generated/metal_ios/
       platforms:

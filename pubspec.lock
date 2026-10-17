@@ -291,6 +291,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  mc_server:
+    dependency: "direct main"
+    description:
+      path: "packages/mc_server"
+      relative: true
+    source: path
+    version: "0.1.0"
   mc_session:
     dependency: "direct main"
     description:

@@ -106,6 +106,11 @@ dist/
 /assets/vanilla/*
 !/assets/vanilla/.gitkeep
 
+# 本机托管的服务端 jar 产物（Paper GPLv3 / Mojang EULA：不入库；本地放置，见 README「本地服务器」）。
+# 版本目录下只保留 .gitkeep（pubspec 逐目录声明要求目录存在），jar 与其余产物一律忽略。
+/assets/server/*/*
+!/assets/server/*/.gitkeep
+
 # Dart 包构建产物（注意：上面第 33 行的 `/build/` 带前导斜杠，只匹配仓库根，
 # 匹配不到 monorepo 里每个子包各自生成的 build/；此处显式补上）
 packages/*/build/

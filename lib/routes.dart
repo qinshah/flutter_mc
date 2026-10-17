@@ -4,13 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:mc_session/mc_session.dart';
 
 import 'game/game_screen.dart';
+import 'platform/server_host/local_server_config.dart';
+import 'platform/server_host/local_server_host.dart';
 import 'screens/confirm_screen.dart';
 import 'screens/multiplayer/direct_join_server_screen.dart';
 import 'screens/multiplayer/join_flow.dart';
 import 'screens/multiplayer/join_multiplayer_screen.dart';
+import 'screens/multiplayer/local_server_screen.dart';
 import 'screens/multiplayer/manage_server_screen.dart';
 import 'screens/options/video_settings_screen.dart';
 import 'screens/title_screen.dart';
+import 'screens/worldselection/select_world_screen.dart';
 
 /// 游戏屏路由的参数：会话句柄 + 服务器显示名（断开提示用）。
 ///
@@ -29,6 +33,22 @@ class GameArgs {
   final Stream<SessionEvent> events;
 
   final String serverName;
+}
+
+/// 本地服务器屏路由参数（宿主侧条目，见 `platform/server_host/`）。
+class LocalServerArgs {
+  const LocalServerArgs({
+    required this.manager,
+    required this.config,
+    this.playMode = false,
+  });
+
+  final LocalServerManager manager;
+  final LocalServerConfig config;
+
+  /// 进世界模式（单机世界列表的「进入世界」）：进屏即启动 → 等就绪 → 连入；
+  /// 不显示日志/RCON 控制台；退出游戏（`/game` 返回）后停止服务器并返回上层。
+  final bool playMode;
 }
 
 /// 路由唯一事实来源（能力 client-screens：菜单页面链路 + /game 游戏屏）。
@@ -89,6 +109,21 @@ Route<dynamic>? Function(RouteSettings) mcOnGenerateRoute = (settings) {
       final args = settings.arguments! as ConfirmArgs;
       return MaterialPageRoute<bool>(
         builder: (_) => ConfirmScreen(args: args),
+      );
+    case '/singleplayer':
+      // 单人游戏 → 世界列表（原版 `SelectWorldScreen`）。参数为宿主管理器。
+      final manager = settings.arguments! as LocalServerManager;
+      return MaterialPageRoute<void>(
+        builder: (_) => SelectWorldScreen(manager: manager),
+      );
+    case '/multiplayer/local':
+      final args = settings.arguments! as LocalServerArgs;
+      return MaterialPageRoute<void>(
+        builder: (_) => LocalServerScreen(
+          manager: args.manager,
+          config: args.config,
+          playMode: args.playMode,
+        ),
       );
   }
   return null;

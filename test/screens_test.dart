@@ -25,11 +25,13 @@ void main() {
     expect(find.text('© Mojang AB 请勿二次分发！'), findsOneWidget);
   });
 
-  testWidgets('标题屏按钮可用性：单人/Realms/图标钮禁用占位', (tester) async {
+  testWidgets('标题屏按钮可用性：单人（本地世界快捷入口）/Realms/图标钮占位', (tester) async {
     await pumpApp(tester);
     MCButton buttonOf(String label) =>
         tester.widget<MCButton>(find.widgetWithText(MCButton, label));
-    expect(buttonOf('单人游戏').onPress, isNull);
+    // 「单人游戏」不再禁用：它是本地服务器的快捷入口（openspec change
+    // local-server-host spec「单人入口是快捷路径」）；按下去会走宿主启动流程。
+    expect(buttonOf('单人游戏').onPress, isNotNull);
     expect(buttonOf('Minecraft Realms').onPress, isNull);
     expect(buttonOf('多人游戏').onPress, isNotNull);
     expect(buttonOf('选项…').onPress, isNotNull);

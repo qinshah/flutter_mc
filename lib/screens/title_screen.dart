@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mc_ui/mc_ui.dart';
 
+import '../platform/server_host/local_server_host.dart';
 import 'screen.dart';
 
 /// gui/screens/TitleScreen.java 的对应：标题区（文字版 MINECRAFT/JAVA
@@ -76,7 +77,7 @@ class TitleScreen extends StatelessWidget {
                   width: 200 * s,
                   height: 20 * s,
                   label: '单人游戏',
-                  onPress: null,
+                  onPress: () => _openSingleplayer(context),
                 ),
                 gap,
                 MCButton(
@@ -159,4 +160,20 @@ class TitleScreen extends StatelessWidget {
     );
       });
   }
+}
+
+/// 单人游戏（原版 `TitleScreen` 的 Singleplayer 按钮 → `SelectWorldScreen`）：进**世界列表**。
+///
+/// MUST NOT 进屏即启动服务器：本地服务器只在列表里按「进入世界」后才起（免得占着端口却
+/// 没人进世界）。进世界形态见 `LocalServerScreen(playMode: true)`。
+Future<void> _openSingleplayer(BuildContext context) async {
+  final LocalServerManager manager;
+  try {
+    manager = localServerManager;
+  } catch (e) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('本地服务器宿主未就绪：$e')));
+    return;
+  }
+  await Navigator.pushNamed(context, '/singleplayer', arguments: manager);
 }
