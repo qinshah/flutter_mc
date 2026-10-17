@@ -5,6 +5,8 @@
 library;
 
 export 'src/block_pos.dart';
+export 'src/jsonrpc_client.dart';
+export 'src/management_methods.dart';
 export 'src/packets.dart';
 export 'src/protocol_ids.dart';
 export 'src/registry.dart';
