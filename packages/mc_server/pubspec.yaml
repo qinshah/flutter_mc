@@ -1,0 +1,11 @@
+name: mc_server
+description: "原版系服务端的控制面翻译件：server.properties 读写、RCON 客户端、EULA 文件。纯 Dart，无 Flutter 依赖。"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

@@ -1,0 +1,8 @@
+# 与仓库其余包一致使用 recommended；此处**关闭** constant_identifier_names：
+# 本包常量名刻意照原版 SCREAMING_CASE（PktUtils.MAX_PACKET_SIZE、RconClient.SERVERDATA_*、
+# SecurityConfig.SECRET_KEY_CHARS 等），命名纪律见 AGENTS.md「命名与路径也照原版」。
+include: package:lints/recommended.yaml
+
+linter:
+  rules:
+    constant_identifier_names: false
