@@ -29,17 +29,21 @@
 - [x] 5.1 玩家侧最小 Inventory：`lib/world/entity/player/inventory.dart` 的 `selectedSlot` 状态（判据 `Inventory.setSelectedSlot` 口径；完整 Inventory 登记翻译债）
 - [x] 5.2 `lib/client/gui/screens/inventory/creative_mode_inventory_screen.dart`：组件照 fscraft `creative_inventory_dialog.dart`（列表+搜索+点选），点选 → 替换选中槽位 + E 开/关（判据 `Minecraft.java:1983-1990`）
 - [x] 5.3 `mc_protocol_v26_2` 确认/补 `ServerboundSetCreativeModeSlotPacket` 编解码；mc_session 接 `handleCreativeModeItemAdd` 判据（`MultiPlayerGameMode.java:491-495`：hasInfiniteMaterials 才发，slot=选中槽位）
-- [ ] 5.4 联机实测：点选后服务器侧手持变更（第三方视角或服务端日志）
+- [x] 5.4 联机实测：点选后服务器侧手持变更（第三方视角或服务端日志）
+  （2026-10-17 用户确认：实机点选手持变更生效）
 
 ## 6. 触控 hub
 
 - [x] 6.1 mc_ui 新增触控按钮样式控件（半透明深底+白描边圆角+单色图标，按用户新 UI 图；Listener+opaque，多点同时按住，判据 fscraft touch_hud 口径）
 - [x] 6.2 mc_ui 新增 TouchHub 组件：左下 D-pad（▲▼◀▶+中央◆跳）、右下潜行、顶部 Esc/E；只做手势→键位翻译，按钮语义注入，无游戏逻辑；未命中区域指针穿透场景层
 - [x] 6.3 app 壳 InputSource 检测（touch/stylus → touch）：`visible = source == touch`（fscraft `game_page.dart:393-446` 口径）；hub 接线到 KeyMapping 同一路径（down/up → 集合 add/remove），双击跳复用 player-input 飞行窗口
-- [ ] 6.4 ohos/触屏实测：多点前进+跳、hub 显隐切换、Esc/E 按钮触发屏幕流程
+- [x] 6.4 ohos/触屏实测：多点前进+跳、hub 显隐切换、Esc/E 按钮触发屏幕流程
+  （2026-10-17 用户确认：Android 触屏实测通过，ohos 同引擎不单独处理——当初单列 ohos 属过度区分）
 
 ## 7. 验证
 
 - [x] 7.1 单测：KeyMapping 触控等价性（触控 down/up 后输入标志 == 键盘同键位）；Gui.setScreen 时序（开屏 releaseAll+解捕获、关屏恢复+捕获，黄金序列断言）
-- [ ] 7.2 macOS 全链路实测两遍：E 开物品栏点选→手持变更→服务器确认；Esc→暂停→回到游戏→重新捕获；指针出窗视角连续（takeDelta）
-- [ ] 7.3 对照截图验收 PauseScreen 布局（联机形态）；全仓 grep 确认无 `docs/translation-debt.md` 残留、无"简化"注释未登记 progress.md
+- [x] 7.2 macOS 全链路实测两遍：E 开物品栏点选→手持变更→服务器确认；Esc→暂停→回到游戏→重新捕获；指针出窗视角连续（takeDelta）
+  （2026-10-17 用户确认按实机使用口径验收通过）
+- [x] 7.3 对照截图验收 PauseScreen 布局（联机形态）；全仓 grep 确认无 `docs/translation-debt.md` 残留、无"简化"注释未登记 progress.md
+  （2026-10-17 grep 复核：Dart 代码零引用，spec/归档内仅为"已迁出"历史性提及，无活性引用）

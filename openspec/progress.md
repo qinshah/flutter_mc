@@ -44,6 +44,22 @@
       —— 随机权重方块（草/花变体）每次取同一个
 - [ ] 图集 UV 不写 padding（`atlas_uv.dart:11`）—— 图集边缘可能串色
   - 原版：`client/resources/model/BlockModel.java`、`model/textures/SpriteLoader.java`
+- [ ] blockstate 变体旋转 uvlock 的**转置情形**矩形 UV 丢字段方向（2026-10-17 登记）
+  - 原版：`FaceBakery.java:144-151` 逐顶点烘焙 UV——少数（群, 面）组合下最终
+    UV 场相对模板是转置的（u 随模板 cv 变、v 随模板 cu 变；实证 east 面 + x=90），
+    四顶点 UV 不构成轴对齐矩形沿模板轴的绑定
+  - 我们：`packages/mc_resource/lib/src/face_bakery.dart` `_bakeFaceUvs` 检测到
+    转置时退化为两通道 min/max 包围矩形（`BoxFace` 只有 (u1,v1,u2,v2) 表示）
+  - 后果：该类面的纹理方向（90° 旋转）与原版不同；位置与朝向仍正确
+- [ ] mesher 面模板角绑定与原版在 east/north 面不一致（2026-10-17 登记）
+  - 原版：`FaceInfo.java:10-46` 各面取角 + `CuboidFace.java:77-83` 统一
+    v0=(minU,minV)…v3=(maxU,minV) 绑定
+  - 我们：`packages/mc_render/lib/src/mesher.dart` `_boxCorners` 用自配的
+    flip 修正（east 面 u 翻转、north 面 180°）近似达成同效果，但模板与原版
+    不逐项对应；整块路径的历史近似
+  - 后果：整块六面的 UV 角对应与原版存在未逐项核对的面；楼梯等烘焙面
+    （矩形已按原版绑定提取）经该路径重映射后方向可能再偏——单一木板纹理
+    场景不可见，混贴图方块需回访
 
 ## 6. 方块分类（影响正确性·中）
 
@@ -111,6 +127,27 @@
       `EntityDimensions.makeBoundingBox`（EntityDimensions.java:19-22）的 float
       语义建盒——float32(0.6)/2 = 0.30000001192092896、头顶 y + float32(1.8)。
       曾经此差 1.19e-8 被 Paper `hasNewCollision` 判 CLIPPED_INTO_BLOCK 回拉抽搐）
+
+## 13. 方块碰撞形状近似（影响正确性·小，2026-10-17 登记）
+
+- [ ] 未覆盖族兜底整块（原版是每方块白名单 `BlockStateDefinition` 逐类建模）
+  - 我们：`packages/mc_render/lib/src/block_collision_shapes.dart` `_build` 末尾
+    `VoxelShape.full()` 兜底
+- [ ] 墙（wall）碰撞臂用栅栏参数近似
+  - 原版：`WallBlock.makeShapes`（WallBlock.java:66-74）碰撞 = post
+    `column(8, 0, 24)`（UP 时）+ 臂 `boxZ(6, 0, 24, 0, 11)`——臂厚 6/16、
+    post 宽 8/16，且 low/tall 在**碰撞层同形**（:67 wallTop=postHeight=24）；
+    我们：`_crossCollision(props, 1.5)`（post 4/16 宽、臂厚 4/16 深 8/16）
+- [ ] 脚手架碰撞整块化
+  - 原版：`ScaffoldingBlock` 碰撞随 bottom/support 变化（顶部可站立边缘）
+  - 我们：`_scaffolding` 返回整块（首切片）
+- [x] ~~栅栏门开启态碰撞为两端柱~~（2026-10-17 已还债：`getCollisionShape`
+  开启 → 空（FenceGateBlock.java:105-108），`in_wall` 只改视觉 shape）
+- [x] ~~楼梯旋转语义直写~~（2026-10-17 已还债：改用 `Shapes.rotate`
+  （BLOCK_ROT_Y_90/180/270 + INVERT_Y，Shapes.java:301-330/:390-403，
+  OctahedralGroup.java:34-42/:65-73）从 NORTH 基准旋出四向 map，
+  StairBlock.java:40-48 逐行对应；`Shapes.or` 补极大盒合并对齐原版
+  离散体素集的吞并语义）
 
 ---
 

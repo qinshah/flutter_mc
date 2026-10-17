@@ -7,4 +7,7 @@
 - [x] 1.3 mc_render 黄金测试 9 项（栅栏 1.5/连接臂、玻璃板 1.0、半砖、楼梯 straight/inner/outer/top 镜像、雪片 0.125n、耕地/土径/灵魂沙/地毯、门开关）
 - [x] 1.4 `SessionCollisionWorld.collisionShapeAt`（身份串查询，未加载/无碰撞 null）
 - [x] 1.4b 门（`_door`，DoorBlock.java:55/:85-91：open → hinge 旋向缘 3/16 薄板）与活板门（`_trapdoor`，TrapDoorBlock.java:51/:77-79：closed half 底/顶水平板、open facing 竖板）——缺失时整块兜底 = 实机"门口卡死"根因
-- [ ] 1.5 翻译债（progress.md）：未覆盖族兜底整块、wall tall/short 臂近似、gate in_wall 高度、楼梯旋转改用 Shapes.rotate 精确映射（现为语义直写+单测锁定）
+- [x] 1.5 翻译债（progress.md）：未覆盖族兜底整块、wall tall/short 臂近似、gate in_wall 高度、楼梯旋转改用 Shapes.rotate 精确映射（现为语义直写+单测锁定）
+  （2026-10-17 完成口径：楼梯旋转已改为 Shapes.rotate 精确映射（BLOCK_ROT_Y_90/180/270 +
+  INVERT_Y，Shapes.or 补极大盒合并）；栅栏门开启态碰撞按 FenceGateBlock.java:105-108
+  修正为空，in_wall 确认只影响视觉 shape；兜底/wall 臂/脚手架近似登记 progress.md 第 13 类）
