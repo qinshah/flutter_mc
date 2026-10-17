@@ -6,6 +6,7 @@
 /// 本包是 packages/ 下唯一允许依赖 Flutter 的包，禁依赖 flutter_scene。
 library;
 
+export 'src/chat_component.dart';
 export 'src/crosshair.dart';
 export 'src/mc_button.dart';
 export 'src/mc_cycle_button.dart';

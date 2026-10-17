@@ -379,10 +379,45 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     setState(() => _ready = true);
   }
 
+  // —— debug 消息浮层（原版 `ChatComponent` 显示口径；组件在 mc_ui）——
+
+  /// 当前浮层消息（旧 → 新；容量同原版 `allMessages` 的 100 条上限）。
+  final List<GuiMessage> _chatFeed = [];
+
+  /// 浮层重建定时器（100ms 量级，驱动 `ChatComponent` 的 9s 停留 + 1s 淡出）；
+  /// 无消息时停掉，避免空转。
+  Timer? _chatFeedTimer;
+
+  /// 推一条浮层消息（原版 `handleSystemMessage` 口径：入列 + 截断 + 起拍）。
+  void _pushChatMessage(String text) {
+    _chatFeed.add(GuiMessage(text));
+    if (_chatFeed.length > 100) _chatFeed.removeRange(0, _chatFeed.length - 100);
+    _chatFeedTimer ??= Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => _refreshChatFeed(),
+    );
+    if (mounted) setState(() {});
+  }
+
+  /// 清掉超时消息（200 刻 = 10s）；清完停拍。
+  void _refreshChatFeed() {
+    final now = DateTime.now();
+    _chatFeed.removeWhere(
+      (m) => now.difference(m.addedAt).inMilliseconds > 10000,
+    );
+    if (!mounted) return;
+    if (_chatFeed.isEmpty) {
+      _chatFeedTimer?.cancel();
+      _chatFeedTimer = null;
+    }
+    setState(() {});
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _events?.cancel();
+    _chatFeedTimer?.cancel();
     _focus.dispose();
     _mouseHandler.dispose();
     widget.session.close();
@@ -724,7 +759,23 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         // 【2026-10-11】此前实测"抽搐"曾疑回拉，诊断确认根因 = 漏发
         // ClientTickEnd（服务器 knownMovement 状态机失配致位置漂移→拒绝循环），
         // sendMovePlayer 补发后恢复正常回拉响应（原版权威位姿语义）。
+        // debug 信息流：先采客户端当前位置，回拉量 = 服务器落点 − 客户端位置。
+        final preX = _player.position.x;
+        final preY = _player.position.y;
+        final preZ = _player.position.z;
         _player.setPos(x, y, z);
+        // 服务器位姿包 ⇒ 插值起点对齐新位置，回拉/传送不拖残影
+        // （判据 `ClientPacketListener.handleMovePlayer` :820-825：
+        // `entity.setOldPosAndRot(…interpolationValues.position()…)`——
+        // 绝对位姿下 old := 折算后的新位置，插值区间坍缩为点）。
+        _player.xOld = x;
+        _player.yOld = y;
+        _player.zOld = z;
+        // 回拉量入 ChatComponent 浮层（左下角，9s 停留 + 1s 二次淡出）。
+        final pull = math.sqrt(math.pow(x - preX, 2) +
+            math.pow(y - preY, 2) +
+            math.pow(z - preZ, 2));
+        _pushChatMessage('被拉回 ${pull.toStringAsFixed(3)}');
         // 原版 setDeltaMovement(newValues.deltaMovement())：速度也以服务器下发为准。
         _player.velocity.setValues(dx, dy, dz);
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
@@ -1390,6 +1441,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
               onPointerUp: (event) => _mouseHandler.onButton(false),
               child: SceneView(_scene, camera: _camera, onTick: _onTick),
             ),
+
+            // —— ②a debug 消息浮层（原版 `ChatComponent`：左下角、最新在下，
+            //    9s 停留 + 1s 二次淡出；IgnorePointer 不吃输入）——
+            if (_chatFeed.isNotEmpty)
+              Positioned(
+                left: 4,
+                bottom: 56,
+                child: MCChatComponent(messages: _chatFeed),
+              ),
 
             // —— ②b 热键栏 HUD（判据 `Hud` 底部居中 hotbar；数字键/滚轮/
             //    点选的判据见 _onKey/_onScroll；屏幕打开时被覆盖层遮住）——
