@@ -759,10 +759,6 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         // 【2026-10-11】此前实测"抽搐"曾疑回拉，诊断确认根因 = 漏发
         // ClientTickEnd（服务器 knownMovement 状态机失配致位置漂移→拒绝循环），
         // sendMovePlayer 补发后恢复正常回拉响应（原版权威位姿语义）。
-        // debug 信息流：先采客户端当前位置，回拉量 = 服务器落点 − 客户端位置。
-        final preX = _player.position.x;
-        final preY = _player.position.y;
-        final preZ = _player.position.z;
         _player.setPos(x, y, z);
         // 服务器位姿包 ⇒ 插值起点对齐新位置，回拉/传送不拖残影
         // （判据 `ClientPacketListener.handleMovePlayer` :820-825：
@@ -771,11 +767,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         _player.xOld = x;
         _player.yOld = y;
         _player.zOld = z;
-        // 回拉量入 ChatComponent 浮层（左下角，9s 停留 + 1s 二次淡出）。
-        final pull = math.sqrt(math.pow(x - preX, 2) +
-            math.pow(y - preY, 2) +
-            math.pow(z - preZ, 2));
-        _pushChatMessage('被拉回 ${pull.toStringAsFixed(3)}');
+        // 回拉量入 ChatComponent 浮层（左下角，9s 停留 + 1s 二次淡出）：
+        // 显示被拉回**落点的 x/y/z 坐标**（2 位小数）。
+        _pushChatMessage('被拉回 '
+            '${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)}, ${z.toStringAsFixed(2)}');
         // 原版 setDeltaMovement(newValues.deltaMovement())：速度也以服务器下发为准。
         _player.velocity.setValues(dx, dy, dz);
         // 原版 yaw 0 = 朝 +Z（度）；本应用 yaw 0 = 朝 -Z（弧度）——逆变换。
