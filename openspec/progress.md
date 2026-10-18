@@ -325,3 +325,28 @@
 
 > 见能力 `project-structure` 的「命名与文件路径照原版」需求。逐步改正会牵动导入关系，
 > 建议在相关 change 中顺手改，不单独做大规模重命名。
+
+### 16.4 承载二次演进：宿主进程内 → 专用 `:jvm` 子进程（2026-10-18，change `android-subprocess-jvm-host`）
+
+- **动因**：16.3 的"一进程一台 VM"在宿主进程内承载下使二次起服静默夭折（真机 bug：
+  退出世界后再进卡「正在启动本地服务器」，实例日志分界行后零输出）+ 三处退化
+  （退出码回传 0 / exit() GOT patch / 不可强杀）。FCL 实证"会话即进程、退即自杀"
+  （`GameMenu.onExit` → killProcess，GameMenu.java:967-973）。
+- **新口径**：被托管 JVM 装进应用专用 `:jvm` 子进程（`JvmHostService`，一次会话一个、
+  会话结束自杀）；真实退出码经 native exit 拦截层回传（`exitStatus`）；强杀能力恢复；
+  宿主终止 ⇒ 服务端终止 = force stop 全杀 + 子进程心跳 watchdog 兜底。
+  **撤销**：16.3 的"退出码回传 0""宿主存活机制（GOT patch 拦 exit）"两条——GOT patch
+  的 mc_guarded_exit 保留但语义改为"回传退出码 + 终止承载子进程"（宿主进程不再被
+  改写 libjvm 重定位的路径保护，承载子进程死即净）。
+- **实测坑（全部真机踩出，防复发）**：
+  1. `Runtime.addShutdownHook` 注册在 **ART**，被托管 JVM（HotSpot）的 `System.exit`
+     不会调它——结果文件必须在 native exit 拦截层写（libc exit 必经）；
+  2. MIUI 按 `MiuiMemoryService(started-services)` 杀"仅有非前台 service"的后台进程
+     （adj 800）→ `:jvm` 承载 Service 必须前台化（specialUse，照 FCL ProcessService）；
+  3. 子进程 stdout 有用户态缓冲、exit 时才 flush——**跨会话共用日志文件会串扰**
+     （上一会话停机行落在本会话分界之后）→ 每会话独立日志文件（原版按次滚动同型）；
+  4. `System.out`（ART 与 HotSpot 均然）在 Android 上进 logcat 不走 fd 1——跨进程
+     上报一律走文件；`/proc/<pid>` 探活对活进程误报不存在——判死用 pidFile/心跳文件；
+  5. child 在写 pidFile 前死亡不可观测 → pidFile 必须在 runService 最开头写。
+- **自检 harness**：`/jvm-selftest` 模式 `full`/`client`/`soak`/`twice`
+  （twice = 同会话两轮起停，直接回归"退出世界后再进"）。

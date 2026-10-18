@@ -20,7 +20,7 @@ import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:mc_session/mc_session.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'android_embedded_jvm_host.dart';
+import 'android_subprocess_jvm_host.dart';
 import 'artifact_resolver.dart';
 import 'dedicated_server_process.dart';
 import 'eula_gate.dart';
@@ -134,7 +134,8 @@ class LocalServerManager {
   ///
   /// 这是"运行时宿主"的**装配点**：按平台选承载实现，业务代码不按平台 / 版本号分支。
   ///   · 桌面 → 子进程承载（[DedicatedServerProcess]，`Process.start(java -jar …)`）
-  ///   · Android → 进程内 JVM 承载（[AndroidEmbeddedJvmHost]，dlopen JRE + `JNI_CreateJavaVM`）
+  ///   · Android → 专用子进程承载（[AndroidSubprocessJvmHost]，`:jvm` 子进程内
+  ///     dlopen JRE + `JNI_CreateJavaVM`；一次会话一个子进程，绕开"一进程一台 VM"）
   /// 两者共用 [DedicatedServerCarrier] 这条契约面（spec「与桌面承载层共享同一契约面」）。
   DedicatedServerCarrier processFor(LocalServerConfig config) =>
       _processes.putIfAbsent(config.id, () => _createCarrier(config));
@@ -142,7 +143,7 @@ class LocalServerManager {
   DedicatedServerCarrier _createCarrier(LocalServerConfig config) {
     final instanceDirectory = instanceDirectoryFor(config);
     if (Platform.isAndroid) {
-      return AndroidEmbeddedJvmHost(
+      return AndroidSubprocessJvmHost(
         config: config,
         instanceDirectory: instanceDirectory,
         jreRoot: Directory('${root.path}/jre'),

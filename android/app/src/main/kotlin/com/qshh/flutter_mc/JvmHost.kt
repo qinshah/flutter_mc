@@ -1,6 +1,8 @@
 package com.qshh.flutter_mc
 
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import io.flutter.plugin.common.MethodCall
@@ -59,6 +61,24 @@ object JvmHost {
      * MUST 在后台线程调用（见 [JvmHostChannel]）。
      */
     external fun nativeRunMain(className: String, args: Array<String>): Int
+
+    /**
+     * exit() 拦截开关（design D7）：默认开（宿主进程内承载旧行为）；专用子进程承载在
+     * 建 VM 前关闭——子进程死了就死了，不改写 libjvm 重定位。返回 0 成功。
+     */
+    external fun nativeSetExitGuardEnabled(enabled: Boolean): Int
+
+    /**
+     * 注入 exit 结果回传路径（design D5）：被托管 JVM 收尾调 `System.exit(status)` 时，
+     * 拦截层把真实 `status` 写入结果文件并终止承载子进程。返回 0 成功。
+     */
+    external fun nativeSetExitResultPaths(resultPath: String, pidPath: String): Int
+
+    /**
+     * 对指定 pid 下发 SIGKILL（design D6）：承载父进程对子进程的强制终止能力。
+     * 同 uid 由内核放行；返回 0 成功、-1 失败。
+     */
+    external fun nativeKill(pid: Int): Int
 }
 
 /**
@@ -149,6 +169,27 @@ class JvmHostChannel(private val context: Context) : MethodChannel.MethodCallHan
 
                 "stopKeepAlive" ->
                     LocalServerKeepAliveService.stop(context).also { result.success(null) }
+
+                // [专用子进程承载] 把承载参数透传给 :jvm 进程的 JvmHostService。
+                "startJvmService" -> {
+                    val params = call.argument<Map<String, Any>>("params")!!
+                    val bundle = Bundle()
+                    params.forEach { (k, v) ->
+                        when (v) {
+                            is List<*> -> bundle.putStringArrayList(k, ArrayList(v.map { it.toString() }))
+                            else -> bundle.putString(k, v.toString())
+                        }
+                    }
+                    context.startService(
+                        Intent(context, JvmHostService::class.java)
+                            .putExtra(JvmHostService.EXTRA_SERVICE_PARAMS, bundle)
+                    )
+                    result.success(null)
+                }
+
+                // 对承载子进程强制终止（design D6；spec「提供强制终止」）。
+                "killPid" ->
+                    result.success(JvmHost.nativeKill(call.argument<Int>("pid")!!))
 
                 else -> result.notImplemented()
             }

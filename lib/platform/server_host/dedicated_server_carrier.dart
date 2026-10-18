@@ -2,7 +2,8 @@
 //
 //   两块承载实现共用这一条接口，装配点按平台选实现，业务代码不按平台 / 版本分支：
 //     · 桌面：子进程承载 —— `dedicated_server_process.dart`（`Process.start(java -jar ...)`）
-//     · Android：进程内 JVM 承载 —— `android_embedded_jvm_host.dart`（dlopen JRE + JLI_Launch）
+//     · Android：专用子进程承载 —— `android_subprocess_jvm_host.dart`
+//       （`:jvm` 子进程内 dlopen JRE + `JNI_CreateJavaVM`；一次会话一个子进程）
 //
 //   上层契约（实例目录 / 配置读写 / EULA / 就绪判定 / 管理服务器与 RCON）完全平台无关，
 //   不在此接口内——见 spec「与桌面承载层共享同一契约面」。
@@ -66,15 +67,14 @@ abstract class DedicatedServerCarrier {
   /// 启动被托管服务端（阻塞至"已起"或失败）。
   Future<void> start(ServerArtifacts artifacts);
 
-  /// 优雅停止（下发停止请求并等待退出）；超时处置**随承载方式**而定
-  /// （spec「进程生命周期可控可观测」）：进程外可回落强杀，进程内不强杀、转报告失败。
+  /// 优雅停止（下发停止请求并等待退出）；超出等待上限 SHALL 回落强制终止
+  /// （spec「进程生命周期可控可观测」：桌面子进程 kill / Android 承载子进程 `nativeKill`）。
   Future<void> stop();
 
-  /// 回收被托管服务端。
+  /// 回收被托管服务端（应用退出/宿主重载时调用，spec「MUST NOT 残留孤儿进程」）。
   ///
-  /// 进程外承载：强杀残留子进程（应用退出/宿主重载时保证不残留孤儿）。
-  /// 进程内承载：**空操作**——服务端与宿主同进程，宿主终止即服务端终止，
-  /// 「MUST NOT 残留孤儿进程」自然成立（spec「进程内承载的生命周期释放口径」）。
+  /// 桌面：强杀残留子进程；Android：对承载子进程（`:jvm`）下发 SIGKILL 并清理 pidFile
+  /// （子进程心跳 watchdog 兜底"主进程异常死亡"路径，见 `android_subprocess_jvm_host.dart`）。
   void reap();
 
   /// 释放资源。

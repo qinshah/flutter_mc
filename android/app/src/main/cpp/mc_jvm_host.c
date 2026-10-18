@@ -33,6 +33,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <unistd.h>
 
 #define TAG "mc_jvm_host"
@@ -230,6 +231,10 @@ Java_com_qshh_flutter_1mc_JvmHost_nativeChdir(JNIEnv *env, jclass clazz, jstring
 typedef jint (*CreateJavaVM_t)(JavaVM **, void **, void *);
 
 static JavaVM *g_jvm = NULL;
+
+// exit() 拦截开关（design D7）：默认开启（宿主进程内承载的旧行为）；专用子进程承载
+// 启动前显式关闭——子进程死了就死了，不改写 libjvm 重定位。
+static bool g_exit_guard_enabled = true;
 
 // ── 拦下被托管 JVM 的 `exit()`（承载方式，见 openspec/progress.md 16.3） ──────────────
 //
@@ -447,11 +452,43 @@ static int mc_hook_exit_in(const char *libname) {
  * 挂起而不是返回，是因为调用点位于 HotSpot `vm_exit()` 的末尾——返回等于让 VM 带着
  * 已拆除的状态继续执行；而宿主应用（ART 侧线程）与该 JVM 互不相干，照样运行。
  */
+static void mc_guarded_exit(int code);
+
+// exit 结果回传（design D5）：拦截到 exit 后，把真实退出码写进结果文件（C 层写，
+// 供 Dart 侧读取）。路径由 Kotlin 侧经 nativeSetExitResultPath 注入；Kotlin 侧在
+// runMain 返回后已预写 mainExitCode/stopConfirmed 行，这里追加 exit 行。
+static char g_exit_result_path[1024] = {0};
+static char g_exit_pid_path_buf[1024] = {0};
+static bool g_exit_result_ready = false;
+
+static void mc_write_exit_result(int code) {
+    if (!g_exit_result_ready || g_exit_result_path[0] == '\0') return;
+    // 读 Kotlin 预写的基础行（.tmp，可能不存在），追加 exit 行后落为正式结果文件。
+    char tmp_path[1040];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", g_exit_result_path);
+    char prior[2048] = {0};
+    FILE *in = fopen(tmp_path, "r");
+    if (in != NULL) {
+        size_t n = fread(prior, 1, sizeof(prior) - 1, in);
+        fclose(in);
+        prior[n] = '\0';
+        unlink(tmp_path);
+    }
+    FILE *out = fopen(g_exit_result_path, "w");
+    if (out == NULL) return;
+    fputs(prior, out);
+    fprintf(out, "exitStatus=%d\nvmExited=true\n", code);
+    fclose(out);
+}
+
 static void mc_guarded_exit(int code) {
-    HOST_LOGE("拦下被托管 JVM 的 exit(%d)：宿主应用必须存活，永久挂起本线程", code);
-    printf("[mc_jvm_host] 被托管服务端请求退出（exit(%d)）：承载层已拦下，应用继续存活\n", code);
+    HOST_LOGI("拦下被托管 JVM 的 exit(%d)：回传真实退出码后终止承载子进程", code);
+    printf("[mc_jvm_host] 被托管服务端请求退出（exit(%d)）：回传退出码并收尾子进程\n", code);
     fflush(stdout);
-    for (;;) pause(); // 被信号打断就继续睡，绝不返回调用点
+    mc_write_exit_result(code);
+    unlink(g_exit_pid_path_buf); // pidFile 由本层清理
+    kill(getpid(), SIGKILL);   // 承载子进程随之终止（不再挂起线程、不再殃及宿主）
+    for (;;) pause();          // 不可达兜底
 }
 
 /** Java `String[]` → VM 选项数组（optionString 归本函数所有，须在调用结束后释放）。 */
@@ -508,8 +545,10 @@ Java_com_qshh_flutter_1mc_JvmHost_nativeCreateJvm(JNIEnv *env, jclass clazz, job
     }
 
     // 拦下 libjvm 的 `exit()`（**必须在建 VM 之前**，覆盖初始化期的退出路径）。
+    // 开关（design D7）：专用子进程承载下**不装**——子进程死了就死了，宿主进程从此
+    // 不改写 libjvm 重定位（默认开启保持旧行为，子进程承载启动前显式关闭）。
     static bool exit_guard_done = false;
-    if (!exit_guard_done) {
+    if (g_exit_guard_enabled && !exit_guard_done) {
         exit_guard_done = true;
         const int patched = mc_hook_exit_in("libjvm.so");
         if (patched > 0) {
@@ -666,5 +705,43 @@ Java_com_qshh_flutter_1mc_JvmHost_nativeRunMain(JNIEnv *caller_env, jclass clazz
         return -4;
     }
     HOST_LOGI("主类 main 正常返回");
+    return 0;
+}
+
+// exit() 拦截开关（design D7）：子进程承载在启动前关闭（宿主进程内承载旧行为保持默认开）。
+JNIEXPORT jint JNICALL
+Java_com_qshh_flutter_1mc_JvmHost_nativeSetExitGuardEnabled(JNIEnv *env, jclass clazz,
+                                                            jboolean enabled) {
+    g_exit_guard_enabled = enabled != JNI_FALSE;
+    HOST_LOGI("exit() 拦截开关 = %s", g_exit_guard_enabled ? "开" : "关");
+    return 0;
+}
+
+// 对指定 pid 下发 SIGKILL（design D6）：承载父进程对子进程的强制终止能力。
+// 同 uid 进程间 kill 由内核放行；返回 0 成功、-1 失败（errno 见日志）。
+JNIEXPORT jint JNICALL
+Java_com_qshh_flutter_1mc_JvmHost_nativeKill(JNIEnv *env, jclass clazz, jint pid) {
+    if (pid <= 0) return -1;
+    if (kill((pid_t) pid, SIGKILL) != 0) {
+        HOST_LOGE("kill(%d, SIGKILL) 失败：errno=%d", (int) pid, errno);
+        return -1;
+    }
+    HOST_LOGI("已向 pid %d 下发 SIGKILL", (int) pid);
+    return 0;
+}
+
+// 注入 exit 结果回传路径（design D5）：结果文件 + pidFile。专用子进程承载在启动时调用。
+JNIEXPORT jint JNICALL
+Java_com_qshh_flutter_1mc_JvmHost_nativeSetExitResultPaths(JNIEnv *env, jclass clazz,
+                                                           jstring jresult, jstring jpid) {
+    const char *result = (*env)->GetStringUTFChars(env, jresult, NULL);
+    const char *pid = (*env)->GetStringUTFChars(env, jpid, NULL);
+    snprintf(g_exit_result_path, sizeof(g_exit_result_path), "%s", result);
+    snprintf(g_exit_pid_path_buf, sizeof(g_exit_pid_path_buf), "%s", pid);
+    g_exit_result_ready = true;
+    (*env)->ReleaseStringUTFChars(env, jresult, result);
+    (*env)->ReleaseStringUTFChars(env, jpid, pid);
+    HOST_LOGI("exit 结果回传就绪：result=%s pid=%s", g_exit_result_path,
+              g_exit_pid_path_buf);
     return 0;
 }

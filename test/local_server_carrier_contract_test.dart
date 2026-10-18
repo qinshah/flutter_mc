@@ -1,17 +1,16 @@
-// 承载接口的**契约测试**（change android-embedded-jvm-host / tasks 4.2）：
-// 两块承载（桌面子进程 / Android 进程内 JVM）共用 `DedicatedServerCarrier` 这条面，
+// 承载接口的**契约测试**（change android-subprocess-jvm-host / tasks 3.4）：
+// 两块承载（桌面子进程 / Android `:jvm` 子进程）共用 `DedicatedServerCarrier` 这条面，
 // 这里断言的是**规格**要求的分支，而不是某一块实现的输出：
-//   · 「进程生命周期可控可观测」的**超时处置随承载方式**：
-//       进程外 MAY 回落强制终止；进程内 MUST NOT 声称可单独强杀 → 转报告失败。
+//   · 「进程生命周期可控可观测」：所有承载优雅停止超时后 SHALL 回落强制终止。
 //   · 「输出与退出码经承载层回传」/「就绪判定仍只认原版就绪行」：
-//       Android 进程内承载的日志取自实例日志文件，就绪仍以
-//       `DedicatedServer.java:246` 的行为唯一判据。
-import 'dart:async';
+//       Android 承载的日志取自实例日志文件，就绪以 `DedicatedServer.java:246` 为唯一判据；
+//       退出码取自子进程结果文件（真实退出码，撤销"回传 0"退化）。
+//   · 「上一会话残留可检出」：pidFile 未清（子进程未退净）时 MUST NOT 重入承载逻辑。
 import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/services.dart' show MethodCall, MethodChannel;
-import 'package:flutter_mc/platform/server_host/android_embedded_jvm_host.dart';
+import 'package:flutter_mc/platform/server_host/android_subprocess_jvm_host.dart';
 import 'package:flutter_mc/platform/server_host/artifact_resolver.dart';
 import 'package:flutter_mc/platform/server_host/dedicated_server_process.dart';
 import 'package:flutter_mc/platform/server_host/instance_directory.dart';
@@ -71,87 +70,9 @@ void main() {
           reason: '进程外承载超时后回落强杀，服务端应已终止');
       await carrier.dispose();
     });
-
-    test('进程内承载（Android）：优雅停止超时 MUST NOT 强杀，转报告失败并保留日志与状态',
-        () async {
-      final root = Directory('${tmp.path}/local_server');
-      final config = LocalServerConfig(
-        id: 'a',
-        name: '世界',
-        stopTimeoutSeconds: 1,
-      );
-      final instanceDir = InstanceDirectory(Directory('${root.path}/servers/a'));
-      instanceDir.createLayout();
-      File('${instanceDir.dir.path}/server.properties')
-          .writeAsStringSync('enable-rcon=false\n');
-      final jar = _fakeServerJar(tmp);
-      _fakeInstalledJre(root, major: 25);
-
-      // 通道桩：除 launchJvm 外一律立即应答；launchJvm 挂起（模拟 JVM 一直在跑）。
-      final neverEnds = Completer<int>();
-      final calls = <String>[];
-      final runMainCalls = <MethodCall>[];
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(const MethodChannel(_kChannel),
-              (MethodCall call) async {
-        calls.add(call.method);
-        switch (call.method) {
-          case 'escapeNamespaceReady':
-            return true;
-          case 'redirectStdio':
-          case 'chdir':
-          case 'createJvm':
-            return 0;
-          case 'dlopen':
-            return 1;
-          case 'runMain':
-            runMainCalls.add(call);
-            return neverEnds.future;
-          default:
-            return null;
-        }
-      });
-
-      final carrier = AndroidEmbeddedJvmHost(
-        config: config,
-        instanceDirectory: instanceDir,
-        jreRoot: Directory('${root.path}/jre'),
-      );
-      final starting = carrier.start(ServerArtifacts(
-        jar: jar,
-        javaExecutable: '${root.path}/jre/25/bin/java',
-        javaMajor: 25,
-      ));
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-
-      expect(calls, contains('escapeNamespaceReady'),
-          reason: '进程内承载先确认 linker 命名空间绕行可用（不可用即显式报错）');
-      expect(calls, contains('redirectStdio'),
-          reason: '日志来源为承载层重定向到实例日志文件（design D4）');
-      expect(calls, contains('createJvm'),
-          reason: '经 JNI_CreateJavaVM 在进程内建 VM（不经 launcher，故无 execve）');
-      expect(calls, contains('runMain'), reason: '随后调用被托管 jar 的主类');
-      // 主类取自 jar 清单（tasks 9.3），而非硬编码：桩 jar 用的是"已打补丁的服务端
-      // jar"的主类（区别于 paperclip），清单写谁就该调谁。
-      expect(runMainCalls.single.arguments['className'],
-          'org.bukkit.craftbukkit.Main',
-          reason: 'Main-Class 必须来自 jar 的 META-INF/MANIFEST.MF（真 java -jar 同口径），'
-              '换 jar 后跟随新清单值');
-      expect(carrier.state, ServerState.starting);
-
-      await carrier.stop();
-      expect(carrier.state, ServerState.failed,
-          reason: '进程内无从单独终止该 JVM：超时转报告失败（不强杀）');
-      expect(carrier.exitCode, isNull,
-          reason: 'JVM 未结束 → 无退出码；状态与日志保留可观测');
-
-      neverEnds.complete(0); // 收尾，避免挂起的 future 留在测试里
-      await starting;
-      await carrier.dispose();
-    });
   });
 
-  group('日志来源与就绪判定（Android 进程内承载）', () {
+  group('日志来源与就绪判定（Android :jvm 子进程承载）', () {
     test('就绪仍只认原版就绪行，端口取原版日志行（判据 DedicatedServer.java:246 / :210）',
         () async {
       final root = Directory('${tmp.path}/local_server');
@@ -163,27 +84,33 @@ void main() {
       final jar = _fakeServerJar(tmp);
       _fakeInstalledJre(root, major: 25);
 
-      final neverEnds = Completer<int>();
+      // 通道桩：模拟子进程行为——startJvmService 后写 pidFile；killPid 记录调用。
+      final kills = <int>[];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(const MethodChannel(_kChannel),
               (MethodCall call) async {
         switch (call.method) {
-          case 'escapeNamespaceReady':
-            return true;
-          case 'redirectStdio':
-          case 'chdir':
-          case 'createJvm':
+          case 'startJvmService':
+            // 子进程异步写 pidFile（照真实 child：启动后上报 pid）。
+            Future<void>(() async {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+              File('${root.path}/sandbox.pid').writeAsStringSync('4321');
+              // 子进程自写心跳（父进程判活依据；一次写入 12s 内测试结束，视作新鲜）。
+              File('${root.path}/sandbox-child-heartbeat')
+                  .writeAsStringSync(DateTime.now().toIso8601String());
+            });
+            return null;
+          case 'nativeLibraryDir':
+            return '${tmp.path}/nativelib';
+          case 'killPid':
+            kills.add(call.arguments['pid'] as int);
             return 0;
-          case 'dlopen':
-            return 1;
-          case 'runMain':
-            return neverEnds.future;
           default:
             return null;
         }
       });
 
-      final carrier = AndroidEmbeddedJvmHost(
+      final carrier = AndroidSubprocessJvmHost(
         config: config,
         instanceDirectory: instanceDir,
         jreRoot: Directory('${root.path}/jre'),
@@ -196,8 +123,9 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
       // 非就绪行不足以判就绪。
-      final log = File('${instanceDir.dir.path}/logs/host-console.log');
-      log.writeAsStringSync('[12:00:00] Preparing level "world"\n', mode: FileMode.append);
+      final log = _sessionLog(instanceDir);
+      log.writeAsStringSync('[12:00:00] Preparing level "world"\n',
+          mode: FileMode.append);
       await Future<void>.delayed(const Duration(milliseconds: 600));
       expect(carrier.state, ServerState.starting,
           reason: '未出现原版就绪行时不得判就绪（MUST NOT 以"进程已启动"替代）');
@@ -213,13 +141,199 @@ void main() {
       expect(carrier.listeningPort, 25565);
       expect(carrier.recentLogs, contains('Done (2.345s)! For help, type "help"'));
 
-      neverEnds.complete(0);
+      // 收尾：停机行 → 模拟子进程退净（哨兵删 pidFile → 结果文件）→ 状态归 stopped。
+      log.writeAsStringSync('[Server thread/INFO]: Stopping server\n',
+          mode: FileMode.append);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      File('${root.path}/sandbox.pid').deleteSync();
+      File('${root.path}/sandbox-result.txt')
+          .writeAsStringSync('mainExitCode=0\nstopConfirmed=true\n');
+      await starting;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(carrier.state, ServerState.stopped, reason: '停机行后子进程退净 ⇒ stopped');
+      expect(carrier.exitCode, 0, reason: '退出码取自结果文件（真实退出码）');
+      expect(kills, isEmpty, reason: '正常退净不需要强杀');
+      await carrier.dispose();
+    });
+
+    test('退出码可观测：结果文件里的非 0 退出码透传（撤销"回传 0"退化）', () async {
+      final root = Directory('${tmp.path}/local_server');
+      final config = LocalServerConfig(id: 'a', name: '世界', port: 25565);
+      final instanceDir = InstanceDirectory(Directory('${root.path}/servers/a'));
+      instanceDir.createLayout();
+      File('${instanceDir.dir.path}/server.properties')
+          .writeAsStringSync('enable-rcon=false\n');
+      final jar = _fakeServerJar(tmp);
+      _fakeInstalledJre(root, major: 25);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel(_kChannel),
+              (MethodCall call) async {
+        switch (call.method) {
+          case 'startJvmService':
+            Future<void>(() async {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+              File('${root.path}/sandbox.pid').writeAsStringSync('4321');
+              // 子进程自写心跳（父进程判活依据；一次写入 12s 内测试结束，视作新鲜）。
+              File('${root.path}/sandbox-child-heartbeat')
+                  .writeAsStringSync(DateTime.now().toIso8601String());
+            });
+            return null;
+          case 'nativeLibraryDir':
+            return '';
+          default:
+            return null;
+        }
+      });
+
+      final carrier = AndroidSubprocessJvmHost(
+        config: config,
+        instanceDirectory: instanceDir,
+        jreRoot: Directory('${root.path}/jre'),
+      );
+      final starting = carrier.start(ServerArtifacts(
+        jar: jar,
+        javaExecutable: '${root.path}/jre/25/bin/java',
+        javaMajor: 25,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      // 异常退出（无停机行）：结果文件回传非 0（vmExited 路径）→ 死亡监视转 failed。
+      final log = _sessionLog(instanceDir);
+      log.writeAsStringSync('Done (2.345s)! For help, type "help"\n',
+          mode: FileMode.append);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      // 子进程收尾：结果文件（exit 拦截层写）+ pidFile 清理。
+      File('${root.path}/sandbox.pid').deleteSync();
+      File('${root.path}/sandbox-result.txt').writeAsStringSync(
+          'mainExitCode=0\nstopConfirmed=false\nexitStatus=70\nvmExited=true\n');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      expect(carrier.state, ServerState.failed,
+          reason: '无原版停机行 ⇒ 非优雅收尾，转 failed（spec「崩溃可观测」）');
+      expect(carrier.exitCode, 70,
+          reason: '退出码取自 exit 拦截层回传的真实 OS 退出码，MUST 与优雅停止可区分'
+              '（spec「退出码可观测」）');
+
       await starting;
       await carrier.dispose();
     });
 
-    test('生命周期不以主类 main 返回值判停：就绪认就绪行，停机认原版停机行'
-        '（判据 Main.java:201-217 / DedicatedServer.java:246 / MinecraftServer.java:650）',
+    test('优雅停止超时回落强制终止：nativeKill 下发 + 强杀后归 stopped（exitCode 137）',
+        () async {
+      final root = Directory('${tmp.path}/local_server');
+      final config = LocalServerConfig(id: 'a', name: '世界', stopTimeoutSeconds: 1);
+      final instanceDir = InstanceDirectory(Directory('${root.path}/servers/a'));
+      instanceDir.createLayout();
+      // 不启用 RCON：停止只能走"等待 + 超时强杀"分支。
+      File('${instanceDir.dir.path}/server.properties')
+          .writeAsStringSync('enable-rcon=false\n');
+      final jar = _fakeServerJar(tmp);
+      _fakeInstalledJre(root, major: 25);
+
+      final kills = <int>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel(_kChannel),
+              (MethodCall call) async {
+        switch (call.method) {
+          case 'startJvmService':
+            Future<void>(() async {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+              File('${root.path}/sandbox.pid').writeAsStringSync('4321');
+              // 子进程自写心跳（父进程判活依据；一次写入 12s 内测试结束，视作新鲜）。
+              File('${root.path}/sandbox-child-heartbeat')
+                  .writeAsStringSync(DateTime.now().toIso8601String());
+            });
+            return null;
+          case 'nativeLibraryDir':
+            return '';
+          case 'killPid':
+            kills.add(call.arguments['pid'] as int);
+            return 0;
+          default:
+            return null;
+        }
+      });
+
+      final carrier = AndroidSubprocessJvmHost(
+        config: config,
+        instanceDirectory: instanceDir,
+        jreRoot: Directory('${root.path}/jre'),
+      );
+      final starting = carrier.start(ServerArtifacts(
+        jar: jar,
+        javaExecutable: '${root.path}/jre/25/bin/java',
+        javaMajor: 25,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(carrier.state, ServerState.starting);
+
+      // 无 RCON、子进程永不退净 → 超时 → 强杀回落（pidFile 由承载层清理）。
+      await carrier.stop();
+
+      expect(kills, [4321],
+          reason: '超时后对承载子进程 nativeKill（spec「提供强制终止」）');
+      expect(carrier.state, ServerState.stopped, reason: '强杀即终止（与桌面子进程承载同构）');
+      expect(carrier.exitCode, 137, reason: '137 = 128+SIGKILL，强杀可观测');
+      expect(File('${root.path}/sandbox.pid').existsSync(), isFalse,
+          reason: 'SIGKILL 下子进程不会自删 pidFile，承载层负责清理');
+
+      starting.catchError((Object _) {});
+      await carrier.dispose();
+    });
+
+    test('上一会话残留可检出：pidFile 存在且心跳新鲜 ⇒ 拒绝重入（spec 新增场景）',
+        () async {
+      final root = Directory('${tmp.path}/local_server');
+      final config = LocalServerConfig(id: 'a', name: '世界');
+      final instanceDir = InstanceDirectory(Directory('${root.path}/servers/a'));
+      instanceDir.createLayout();
+      File('${instanceDir.dir.path}/server.properties')
+          .writeAsStringSync('enable-rcon=false\n');
+      final jar = _fakeServerJar(tmp);
+      _fakeInstalledJre(root, major: 25);
+
+      var serviceStarts = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel(_kChannel),
+              (MethodCall call) async {
+        switch (call.method) {
+          case 'startJvmService':
+            serviceStarts++;
+            return null;
+          case 'nativeLibraryDir':
+            return '';
+          default:
+            return null;
+        }
+      });
+
+      final carrier = AndroidSubprocessJvmHost(
+        config: config,
+        instanceDirectory: instanceDir,
+        jreRoot: Directory('${root.path}/jre'),
+      );
+
+      // 模拟"上一会话子进程还活着"：pidFile 残留 + child 心跳新鲜。
+      File('${root.path}/sandbox.pid').writeAsStringSync('4321');
+      File('${root.path}/sandbox-child-heartbeat')
+          .writeAsStringSync(DateTime.now().toIso8601String());
+
+      await expectLater(
+        carrier.start(ServerArtifacts(
+          jar: jar,
+          javaExecutable: '${root.path}/jre/25/bin/java',
+          javaMajor: 25,
+        )),
+        throwsStateError,
+        reason: '上一承载子进程未退净时 MUST NOT 重入承载逻辑（spec「上一会话残留可检出」）',
+      );
+      expect(serviceStarts, 0, reason: '拒绝重入 ⇒ 不得 startService');
+      expect(carrier.state, ServerState.failed);
+      await carrier.dispose();
+    });
+
+    test('死会话的 pidFile 磁盘残留自动清理（心跳已停 ⇒ 视为上一 app 会话残留）',
         () async {
       final root = Directory('${tmp.path}/local_server');
       final config = LocalServerConfig(id: 'a', name: '世界', port: 25565);
@@ -230,81 +344,90 @@ void main() {
       final jar = _fakeServerJar(tmp);
       _fakeInstalledJre(root, major: 25);
 
-      // 预置"上一次运行"的日志（日志是同实例目录下**追加写**共用的文件）：
-      // 本次起服的读取起点 MUST 落在本次分界行之后，否则会把上一次的停机行当成本次的。
-      Directory('${instanceDir.dir.path}/logs').createSync(recursive: true);
-      File('${instanceDir.dir.path}/logs/host-console.log').writeAsStringSync(
-          '[old] Done (1.000s)! For help, type "help"\n'
-          '[Server thread/INFO]: Stopping server\n');
-
-      // 桩：`runMain` **立即**返回 0 —— 模拟 paperclip：主类 main 另起 Server thread 后即刻返回。
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(const MethodChannel(_kChannel),
               (MethodCall call) async {
         switch (call.method) {
-          case 'escapeNamespaceReady':
-            return true;
-          case 'redirectStdio':
-          case 'chdir':
-          case 'createJvm':
-            return 0;
-          case 'dlopen':
-            return 1;
-          case 'runMain':
-            return 0;
+          case 'startJvmService':
+            Future<void>(() async {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+              File('${root.path}/sandbox.pid').writeAsStringSync('4321');
+              // 子进程自写心跳（父进程判活依据；一次写入 12s 内测试结束，视作新鲜）。
+              File('${root.path}/sandbox-child-heartbeat')
+                  .writeAsStringSync(DateTime.now().toIso8601String());
+            });
+            return null;
+          case 'nativeLibraryDir':
+            return '';
           default:
             return null;
         }
       });
 
-      final carrier = AndroidEmbeddedJvmHost(
+      final carrier = AndroidSubprocessJvmHost(
         config: config,
         instanceDirectory: instanceDir,
         jreRoot: Directory('${root.path}/jre'),
       );
+
+      // pidFile 残留 + child 心跳陈旧（上次 app 会话被 force-stop，child 来不及自删）。
+      File('${root.path}/sandbox.pid').writeAsStringSync('999');
+      final stale = DateTime.now().subtract(const Duration(minutes: 5));
+      final childHeartbeat = File('${root.path}/sandbox-child-heartbeat')
+        ..writeAsStringSync('stale');
+      childHeartbeat.setLastModifiedSync(stale);
+
       await carrier.start(ServerArtifacts(
         jar: jar,
         javaExecutable: '${root.path}/jre/25/bin/java',
         javaMajor: 25,
       ));
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-
-      // 关键断言：main 已返回，但服务端仍在同一 JVM 的 Server thread 上跑 → 状态不得变。
       expect(carrier.state, ServerState.starting,
-          reason: 'main 返回 ≠ 服务端结束：不得据此判停（否则真机上就绪行到达前就被误判 stopped）');
+          reason: '死会话残留自动清理后正常起承载');
 
-      final log = File('${instanceDir.dir.path}/logs/host-console.log');
+      // 收尾：停机行 → 子进程退净 → stopped。
+      final log = _sessionLog(instanceDir);
       log.writeAsStringSync('Done (2.345s)! For help, type "help"\n',
           mode: FileMode.append);
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      expect(carrier.state, ServerState.ready, reason: '就绪仍只认原版就绪行');
-
-      // 停机：原版 `stopServer()` 的 `Stopping server`（MinecraftServer.java:650）。
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       log.writeAsStringSync('[Server thread/INFO]: Stopping server\n',
           mode: FileMode.append);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      File('${root.path}/sandbox.pid').deleteSync();
+      File('${root.path}/sandbox-result.txt')
+          .writeAsStringSync('mainExitCode=0\nstopConfirmed=true\n');
       await Future<void>.delayed(const Duration(milliseconds: 600));
-      expect(carrier.state, ServerState.stopped, reason: '停机只认原版停机行');
-      expect(carrier.exitCode, 0,
-          reason: '进程内拿不到真实退出码，优雅停机回传 0（登记 progress.md 16.3）');
-
-      await carrier.dispose();
-    });
-
-    test('进程内承载的 reap 为空操作（宿主终止即服务端终止，MUST NOT 残留孤儿进程）',
-        () async {
-      final root = Directory('${tmp.path}/local_server');
-      final config = LocalServerConfig(id: 'a', name: '世界');
-      final instanceDir = InstanceDirectory(Directory('${root.path}/servers/a'));
-      final carrier = AndroidEmbeddedJvmHost(
-        config: config,
-        instanceDirectory: instanceDir,
-        jreRoot: Directory('${root.path}/jre'),
-      );
-      carrier.reap(); // 不应抛错、不应尝试终止任何东西
       expect(carrier.state, ServerState.stopped);
       await carrier.dispose();
     });
   });
+}
+
+
+/// 取当前会话的日志文件（carrier 每会话生成 `host-console-<时间戳>.log`，取最新）。
+File _sessionLog(InstanceDirectory instanceDir) {
+  final logs = Directory('${instanceDir.dir.path}/logs')
+      .listSync()
+      .whereType<File>()
+      .where((f) => f.path.contains('host-console-'))
+      .toList()
+    ..sort((a, b) => a.path.compareTo(b.path));
+  return logs.last;
+}
+
+/// 伪造一份**结构真实**的被托管 jar：真 zip + 主清单 `Main-Class`。
+///
+/// 主类故意用 `org.bukkit.craftbukkit.Main`（= 已打补丁的服务端 jar 的主类，区别于
+/// paperclip 引导 jar 的 `io.papermc.paperclip.Main`）——换 jar 后主类必须**跟随清单**
+/// 而非残留硬编码（归档 change tasks 9.3 的验证口径在契约层的等价物）。
+File _fakeServerJar(Directory tmp) {
+  const manifest = 'Manifest-Version: 1.0\r\n'
+      'Main-Class: org.bukkit.craftbukkit.Main\r\n'
+      '\r\n';
+  final archive = Archive()
+    ..add(ArchiveFile.bytes('META-INF/MANIFEST.MF', manifest.codeUnits));
+  return File('${tmp.path}/server.jar')
+    ..writeAsBytesSync(ZipEncoder().encode(archive));
 }
 
 /// 伪造一份"已安装的 arm64 JRE"，让 Android 承载的路径口径可解析
@@ -317,19 +440,4 @@ void _fakeInstalledJre(Directory root, {required int major}) {
   File('${jre.path}/bin/java').createSync(recursive: true);
   File('${jre.path}/lib/aarch64/jli/libjli.so').createSync(recursive: true);
   File('${jre.path}/lib/aarch64/server/libjvm.so').createSync(recursive: true);
-}
-
-/// 伪造一份**结构真实**的被托管 jar：真 zip + 主清单 `Main-Class`。
-///
-/// 主类故意用 `org.bukkit.craftbukkit.Main`（= 已打补丁的服务端 jar 的主类，区别于
-/// paperclip 引导 jar 的 `io.papermc.paperclip.Main`）——换 jar 后主类必须**跟随清单**
-/// 而非残留硬编码（tasks 9.3 的验证口径在契约层的等价物）。
-File _fakeServerJar(Directory tmp) {
-  const manifest = 'Manifest-Version: 1.0\r\n'
-      'Main-Class: org.bukkit.craftbukkit.Main\r\n'
-      '\r\n';
-  final archive = Archive()
-    ..add(ArchiveFile.bytes('META-INF/MANIFEST.MF', manifest.codeUnits));
-  return File('${tmp.path}/server.jar')
-    ..writeAsBytesSync(ZipEncoder().encode(archive));
 }

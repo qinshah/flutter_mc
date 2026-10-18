@@ -74,7 +74,22 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keep the hosted Minecraft dedicated server (in-process JVM) alive while running" />
+                android:value="Keep the hosted Minecraft dedicated server (JVM in a dedicated app process) alive while running" />
+        </service>
+        <!-- 被托管服务端的承载 Service（change android-subprocess-jvm-host）：跑在 :jvm
+             专用子进程，一次会话一个子进程、会话结束即自杀（FCL GameMenu.onExit 的
+             killProcess 范式）。每会话全新 VM，绕开"一进程一台 VM"对二次起服的限制。
+             前台化（specialUse，照 FCL ProcessService 的 ":jvm + FGS" 形态）：实测 MIUI
+             会按 MiuiMemoryService(started-services) 杀掉"仅有非前台 service"的后台
+             进程（adj 800），前台化后不被回收。 -->
+        <service
+            android:name=".JvmHostService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":jvm">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Host the Minecraft dedicated server JVM in this dedicated app process" />
         </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
