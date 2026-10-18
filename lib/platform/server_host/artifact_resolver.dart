@@ -7,10 +7,14 @@
 //
 // 口径（design.md D5）：
 //   * 桌面**不捆绑 JRE**：探测系统 JDK 主版本，满足即用；不满足按"缺产物"报出并给指引。
+//   * Android **无系统 JVM**：JVM 取自应用私有目录里由构建期资产安装的 arm64 JRE
+//     （`<root>/jre/<major>`）；缺失即按"缺产物"报出（spec「JRE 产物按客户端锚点主版本提供」
+//     「产物安装于应用私有目录」）。承载方式走 dlopen，见 `android_embedded_jvm_host.dart`。
 //   * jar 现阶段由构建期资产携带（git 不追踪），或由用户在产物目录放置；缺失时入口置灰并
 //     提示放置位置；**MUST NOT** 静默替换为其他版本（spec「产物解析与缺失降级」）。
 import 'dart:io';
 
+import 'jre_release.dart';
 import 'local_server_config.dart';
 
 /// 解析产物缺失（含期望位置），供 UI 置灰 + 报缺。
@@ -57,14 +61,24 @@ class ArtifactResolver {
     JavaExecutableLocator? javaLocator,
     this.bundledJarLister,
     this.bundledJarLoader,
-  })  : _javaProbe = javaProbe ?? probeSystemJavaMajor,
-        _javaLocator = javaLocator ?? _resolveSystemJavaExecutable;
+  })  : _javaProbeOverride = javaProbe,
+        _javaLocatorOverride = javaLocator;
 
   /// 应用私有根（`local_server_host.dart` 下的 `local_server/`）。
   final Directory root;
 
-  final JavaMajorProbe _javaProbe;
-  final JavaExecutableLocator _javaLocator;
+  final JavaMajorProbe? _javaProbeOverride;
+  final JavaExecutableLocator? _javaLocatorOverride;
+
+  /// 本次解析的目标 Java 主版本（Android 上据此定位已安装的 JRE 目录）。
+  int _wantedJavaMajor = 0;
+
+  /// JVM 定位：默认按平台（[_defaultJavaLocator]）；单测可注入覆写。
+  JavaExecutableLocator get _javaLocator =>
+      _javaLocatorOverride ?? _defaultJavaLocator;
+
+  /// JVM 主版本探测：默认按平台（[_defaultJavaProbe]）；单测可注入覆写。
+  JavaMajorProbe get _javaProbe => _javaProbeOverride ?? _defaultJavaProbe;
 
   /// 构建期资产目录的键枚举器（null 与 [bundledJarLoader] 任一为空即跳过资产回退）。
   final BundledJarLister? bundledJarLister;
@@ -88,18 +102,30 @@ class ArtifactResolver {
   /// 解析（失败抛 [ArtifactMissingException]）。
   Future<ServerArtifacts> resolve(LocalServerConfig config) async {
     _versionLabel = config.mcVersion;
+    _wantedJavaMajor = config.javaMajor;
     final jar = await _resolveJar(config);
     final executable = _javaLocator();
     if (executable == null) {
       throw ArtifactMissingException(
-        '未找到可用的 Java 运行环境：请安装 JDK ${config.javaMajor}（设置 JAVA_HOME 或让 `java` 进入 PATH）。',
+        Platform.isAndroid
+            ? '缺少 arm64 的 Java ${config.javaMajor} 运行环境。'
+                '期望位置：${_androidJreDir.path}（由构建期资产 '
+                'jre/${config.javaMajor}/ 安装，缺资产时本地服务器入口不可用）。'
+            : '未找到可用的 Java 运行环境：请安装 JDK ${config.javaMajor}'
+                '（设置 JAVA_HOME 或让 `java` 进入 PATH）。',
       );
     }
     final major = _javaProbe(executable);
     if (major < config.javaMajor) {
       throw ArtifactMissingException(
-        '系统 Java 主版本为 ${major < 0 ? "未知" : major}，本服务器需要 Java ${config.javaMajor}'
-        '（Paper ${config.mcVersion} 判据见实测日志 logs/latest.log:1）。请升级 JDK 或为实例指定更高的 javaMajor。',
+        Platform.isAndroid
+            ? '可用 JRE 的 Java 主版本为 ${major < 0 ? "未知" : major}，'
+                '本服务器需要 Java ${config.javaMajor}'
+                '（Paper ${config.mcVersion} 判据见实测日志 logs/latest.log:1）。'
+                '请补齐 arm64 的 Java ${config.javaMajor} 产物；MUST NOT 以低主版本启动。'
+            : '系统 Java 主版本为 ${major < 0 ? "未知" : major}，本服务器需要 Java ${config.javaMajor}'
+                '（Paper ${config.mcVersion} 判据见实测日志 logs/latest.log:1）。'
+                '请升级 JDK 或为实例指定更高的 javaMajor。',
       );
     }
     return ServerArtifacts(
@@ -172,6 +198,38 @@ class ArtifactResolver {
       '缺少 ${config.mcVersion} 的服务端产物。请将 Paper jar 放置于：$expectedJarLocation'
       '（产物因许可原因不入库；详见 README「本地服务器」）。',
     );
+  }
+
+  /// Android 上的 JRE 目录（`<root>/jre/<目标主版本>`）。
+  Directory get _androidJreDir =>
+      Directory('${root.path}/jre/$_wantedJavaMajor');
+
+  /// 默认 JVM 定位（按平台）。
+  ///
+  /// * 桌面：系统 JDK（`JAVA_HOME/bin/java` 优先，其次 PATH 上的 `java`）。
+  /// * Android：应用私有目录里**已安装**的 arm64 JRE 的 `<jre>/bin/java`——Android 无系统
+  ///   JVM；该路径只作存在性判据与 `argv[0]`（真正装载走 dlopen，不 `execve`）。
+  String? _defaultJavaLocator() {
+    if (Platform.isAndroid) {
+      final candidate = File('${_androidJreDir.path}/bin/java');
+      return candidate.existsSync() ? candidate.path : null;
+    }
+    return _resolveSystemJavaExecutable();
+  }
+
+  /// 默认 JVM 主版本探测（按平台）。
+  ///
+  /// * 桌面：跑 `java -version`。
+  /// * Android：读已安装 JRE 的 `release` 文件（`JAVA_VERSION`），口径照
+  ///   `FCLauncher.readJREReleaseProperties`（`FCLauncher.java:77-89`）。
+  int _defaultJavaProbe(String executable) {
+    if (Platform.isAndroid) {
+      final file = File(executable);
+      final jreDir = file.parent.parent; // <jre>/bin/java → <jre>
+      final major = JreRelease.javaMajor(jreDir);
+      return major ?? -1;
+    }
+    return probeSystemJavaMajor(executable);
   }
 
   /// 系统 JVM 定位：`JAVA_HOME/bin/java` 优先，其次 PATH 上的 `java`。

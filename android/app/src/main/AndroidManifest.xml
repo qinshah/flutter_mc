@@ -6,6 +6,16 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
+    <!-- ── 前台服务：承载保活 ──────────────────────────────────────────────
+         被托管服务端与宿主同进程（进程内 JVM），退到后台时须靠前台服务维持宿主进程存活
+         （spec「长期运行以前台服务保活」）。类型照参考实现 FCL 的 GameService 取
+         specialUse（不用 dataSync：Android 15+ 对 dataSync 型前台服务有 6 小时强制超时，
+         长期挂服会被系统掐停；specialUse 无此限制）。旧系统不校验类型，声明不影响。
+         通知权限（API 33+）属可选：未授予时前台服务仍可运行，只是不显示通知。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <!-- ── 存储：任意路径读写 ──────────────────────────────────────────────
          READ/WRITE_EXTERNAL_STORAGE 自 Android 10（API 29）起废弃，Android 13
          （API 33）起彻底失效，故用 maxSdkVersion=32 限定只在旧系统生效。
@@ -52,6 +62,20 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 承载保活服务：起服即起、停服即停（见 LocalServerKeepAliveService）。
+             不导出（只由本应用启停）；不开新进程——被托管 JVM 就在本进程内，另开进程
+             会切断"宿主进程终止 ⇒ 服务端一并终止"的口径（spec「进程内承载的生命周期释放口径」）。
+             （参考实现 FCL 的 ProcessService 走 `:jvm` 独立进程——那是因为它的游戏进程
+             与启动器分离；我们的被托管 JVM 与宿主同进程，口径相反，属有意偏离。）
+             specialUse 的 subtype 注明用途（Android 14+ 审查用），照 FCL GameService。 -->
+        <service
+            android:name=".LocalServerKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keep the hosted Minecraft dedicated server (in-process JVM) alive while running" />
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

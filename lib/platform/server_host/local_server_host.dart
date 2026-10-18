@@ -20,6 +20,7 @@ import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:mc_session/mc_session.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'android_embedded_jvm_host.dart';
 import 'artifact_resolver.dart';
 import 'dedicated_server_process.dart';
 import 'eula_gate.dart';
@@ -76,10 +77,11 @@ class LocalServerManager {
   /// 构建期资产的 jar 载入器。
   final BundledJarLoader bundledJarLoader;
 
+  /// 承载接口与状态枚举在本文件内经 `dedicated_server_carrier.dart` 使用；转出给调用方。
   late final LocalServerConfigStore _store =
       LocalServerConfigStore(File('${root.path}/instances.json'));
-  final Map<String, DedicatedServerProcess> _processes =
-      <String, DedicatedServerProcess>{};
+  final Map<String, DedicatedServerCarrier> _processes =
+      <String, DedicatedServerCarrier>{};
   List<LocalServerConfig>? _cache;
 
   Directory get artifactsDir => Directory('${root.path}/artifacts');
@@ -128,24 +130,45 @@ class LocalServerManager {
   EulaGate eulaGateFor(LocalServerConfig config) =>
       EulaGate(instanceDirectoryFor(config));
 
-  /// 取（或建）该实例的进程句柄。
-  DedicatedServerProcess processFor(LocalServerConfig config) =>
-      _processes.putIfAbsent(
-        config.id,
-        () => DedicatedServerProcess(
-          config: config,
-          instanceDirectory: instanceDirectoryFor(config),
-        ),
+  /// 取（或建）该实例的**承载**句柄。
+  ///
+  /// 这是"运行时宿主"的**装配点**：按平台选承载实现，业务代码不按平台 / 版本号分支。
+  ///   · 桌面 → 子进程承载（[DedicatedServerProcess]，`Process.start(java -jar …)`）
+  ///   · Android → 进程内 JVM 承载（[AndroidEmbeddedJvmHost]，dlopen JRE + `JNI_CreateJavaVM`）
+  /// 两者共用 [DedicatedServerCarrier] 这条契约面（spec「与桌面承载层共享同一契约面」）。
+  DedicatedServerCarrier processFor(LocalServerConfig config) =>
+      _processes.putIfAbsent(config.id, () => _createCarrier(config));
+
+  DedicatedServerCarrier _createCarrier(LocalServerConfig config) {
+    final instanceDirectory = instanceDirectoryFor(config);
+    if (Platform.isAndroid) {
+      return AndroidEmbeddedJvmHost(
+        config: config,
+        instanceDirectory: instanceDirectory,
+        jreRoot: Directory('${root.path}/jre'),
       );
+    }
+    return DedicatedServerProcess(
+      config: config,
+      instanceDirectory: instanceDirectory,
+    );
+  }
 
   /// 产物解析（含版本锚点校验）。
   ///
   /// 版本锚点经**装配点**判定（`SessionAssembly.isSupported`）——不在此处按版本号分支，
   /// 与 spec「版本包接入模式」一致；客户端锚点 = 装配点已注册的协议集合。
+  ///
+  /// Android 上无系统 JVM：解析前先确保 arm64 JRE 已由构建期资产安装到应用私有目录
+  /// （spec「JRE 产物按客户端锚点主版本提供」「产物安装于应用私有目录」）。
   Future<ServerArtifacts> resolveArtifacts(LocalServerConfig config) async {
     if (!SessionAssembly.isSupported(config.protocol)) {
       throw VersionAnchorMismatchException(
           config.protocol, SessionAssembly.registeredProtocols);
+    }
+    if (Platform.isAndroid) {
+      await AndroidJreInstaller(jreRoot: Directory('${root.path}/jre'))
+          .ensureInstalled(config.javaMajor);
     }
     final resolver = ArtifactResolver(
       root: root,
@@ -241,7 +264,11 @@ class LocalServerManager {
     final pids = await _javaPids();
     for (final pid in pids) {
       // 本次会话自己起的实例不动（它们有句柄，由停机流程负责）。
-      if (_processes.values.any((p) => p.pid == pid && p.isRunning)) continue;
+      // 仅进程外（桌面）承载有 OS PID 可比对；进程内承载与宿主同进程，无需排除。
+      if (_processes.values.any((p) =>
+          p is DedicatedServerProcess && p.pid == pid && p.isRunning)) {
+        continue;
+      }
       final cwd = await _processCwd(pid);
       if (cwd == null || !_isUnderRoot(cwd)) continue;
       Process.killPid(pid, ProcessSignal.sigterm);

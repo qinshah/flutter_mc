@@ -194,6 +194,121 @@
 
 ---
 
+## 16. Android 进程内 JVM 承载：许可受限登记 + 承载口径变化（影响范围·中，2026-10-18 登记）
+
+> 本项为 change `android-embedded-jvm-host` 登记，分两节：**受限项（许可）**与**承载口径变化**。
+
+### 16.1 受限项：GPL 件已移除 ⇒ 受限登记撤销（仓库级 LICENSE 仍待确定）
+
+- [x] ~~**本仓分发许可受限**~~（**已解除**：GPL 件从未随本仓分发）
+  - 曾引入又已删除的 GPL 件：
+    - `android/app/src/main/cpp/jre_launcher.c` —— **GPLv2 + Classpath exception**
+      （Oracle OpenJDK 派生；承载方式参照 FCL 的 `FCL/src/main/jni/jre_launcher.c`）。
+      **2026-10-18 已删除**：真机实测 `JLI_Launch` 必然 `execve` 顶替应用进程映像，
+      承载改用 `JNI_CreateJavaVM`（JNI 标准 API），不再需要该派生源。
+  - 现存的第三方 native 件（来源与许可全文见
+    `android/app/src/main/cpp/third_party/NOTICE.md`）：
+    - `third_party/androidnsbypass/` —— **MIT**
+      （`nsbypass.c:1` 的 `SPDX-License-Identifier: MIT`、`Copyright (c) 2026 alexytomi`；
+      逐文件核对：MIT 覆盖多数文件，**BSD-2-Clause 只覆盖**
+      `include/liblinkernsbypass_compat/android_linker_ns.h`，`Copyright © 2021 Billy Laws`）；
+      来源：FoldCraftLauncher 仓库 vendored 的 androidnsbypass 子模块
+      （FCL 的 `CMakeLists.txt` 注明 vendor 自 Amethyst-Android `616dc33`）。
+    - Android 侧 Gradle 依赖：`org.apache.commons:commons-compress`（Apache-2.0）、
+      `org.tukaani:xz`（Public Domain）——仅解 `.tar.xz`，非 native 代码。
+  - 结论：native 层现只含 MIT / BSD-2-Clause 件，**本仓分发不再因 GPL 受限**；
+    但**仓库目前仍无 LICENSE 文件**，对外 MUST NOT 声称本仓为宽松许可，许可证口径待定。
+  - 判据：`android/app/src/main/cpp/third_party/NOTICE.md` 第 1–3 节、
+    `.../androidnsbypass/LICENSE`、`.../LICENSE-BSD-2-Clause`。
+
+### 16.2 承载方式：Android 改走**进程内 JVM**（第三类自由设计，非债）
+
+- [x] Android 上被托管服务端的承载方式为**进程内 JVM**（native `dlopen` JRE →
+      `JNI_CreateJavaVM`，**不经** `JLI_Launch`——后者必然 `execve` 顶替进程映像，见 16.3），
+      **不再**走子进程（Android 无系统 JVM；targetSdk ≥ 29 的进程不能 `execve` 应用可写目录）。
+  - 这**不是债**——"运行时宿主"只豁免承载方式。登记目的是记明由此产生的**口径变化**：
+    - 停止超时**不再回落强杀**（进程内无从单独终止该 JVM）→ 转报告失败并保留日志与状态。
+      已按平台重述 `local-server-host` 的「进程生命周期可控可观测」（见该 change 的 delta 规格）。
+    - 「MUST NOT 残留孤儿进程」在进程内承载下**自然成立**（宿主进程终止即服务端终止）。
+    - 日志**来源**由"子进程 stdout 管道"改为"承载层重定向输出 + 实例日志文件"；
+      就绪判定文本与判据不变（仍只认 `DedicatedServer.java:246` 的就绪行）。
+    - 状态机**判据全部改用原版日志行**（见 16.3 末条）：就绪 `DedicatedServer.java:246`、
+      停机 `MinecraftServer.java:650`、启动失败 `Main.java:227`——**不用**主类 `main` 的返回值
+      （原版 `Main.java:201-217` 另起 Server thread 后 main 即返回）。
+  - 被托管物（服务端本体）仍是翻译债：见第 14 项。
+
+### 16.3 宿主侧故意偏离与已知限制（2026-10-18 真机实测后登记）
+
+- [x] **承载改用 `JNI_CreateJavaVM`（不用 `JLI_Launch`）**——真机实测 `JLI_Launch` 必然
+      `execve(<jre>/bin/java)` 把整个应用进程映像顶替（`atexit` 探针不触发、crash 缓冲区为空、
+      events 里无 `am_kill`），与"进程内承载"对立；改用 JNI 标准 API 直接建 VM 后进程存活。
+      —— 这属承载方式（非债），但它带来下面几条**必须登记**的后果：
+  - [x] **故意偏离：`-DPaper.IgnoreJavaVersion=true`**（已随 change `design.md` D9 交接）
+        - 判据：被托管服务端 `org/bukkit/craftbukkit/Main.class` 读取 `java.version` 并要求
+          "GA 版本"，非 GA 即拒绝启动（文案 "Unsupported Java detected (...)"）。
+        - 现实：Android 上不存在 GA 版 OpenJDK，arm64 JRE 皆自建、VM 自报 `25.0.5-internal`。
+        - 处置：用**被托管物自己提供的官方开关**（同一判据文件内即有 `Paper.IgnoreJavaVersion`
+          与配套文案 "but the check was skipped. Proceed with caution!"）。
+          **不走伪造路线**：实测 `-Djava.version=` 被 HotSpot 忽略（该属性是 VM 内建只读属性）。
+        - 后果：Paper 的该门禁被跳过——属"宿主为了让被托管物在 Android 上可运行"的**故意偏离**，
+          须随 change 归档一并交接。
+  - [x] **已知限制：一进程一台 VM**（JNI 约束，`DestroyJavaVM` 后不可重建；已随 `design.md` D9 交接）
+        → 同一应用进程内**无法二次起服**（停服后须重启应用才能再起）。launcher 路线同样受此约束。
+  - [x] **已做：exit hook**——**不走** FCL 的 bytehook 形态（用户裁决：不引入第三方 hook 库），
+        改用自写 GOT patch，见本节末「宿主存活机制」条。
+  - [x] **已补：主类改为从 jar 的 `MANIFEST.MF` 读 `Main-Class`**（2026-10-18 落地，
+        任务 9.3）
+        - 实现：`lib/platform/server_host/jar_manifest.dart`（最小 ZIP 读取，只解压
+          MANIFEST 一个条目；语义照 `java.util.jar.Manifest`）；
+          读不到时显式失败（等价 `java -jar` 的 `no main manifest attribute`）。
+        - 验证：单测 9 项 + 真实 paper-26.2.jar（64.5MB）读出 `io.papermc.paperclip.Main`
+          与原硬编码一致；契约测试桩 jar 故意用另一主类（模拟已打补丁服务端 jar），
+          断言 `runMain` 的 className 跟随清单；真机照常起服。
+  - [ ] **跨 VM 边界只许传 C 层值**（实测坑）：进程内有**两台 VM**（ART + 新建 HotSpot），
+        `JNIEnv` 各属其一；把 ART 的 local ref 塞进 HotSpot 数组会被当 oop 解引用而 SIGSEGV
+        （fault addr `0x2c`）。故参数只能"取 C 字符串 → 在新 VM 里重建"。
+  - [ ] **生命周期判据全部取自原版日志行（不用 `main` 返回值）**（任务 9.1，2026-10-18 已落地）
+        - 判据：原版 `Main.main` 经 `MinecraftServer.spin` **另起 "Server thread"** 跑
+          `runServer()` 后即刻返回（`Main.java:201-217` / `MinecraftServer.java:307`）——
+          `main` 返回 ≠ 服务端结束。真机实测：`main 正常返回` 之后原版就绪行才打出来。
+        - 处置：Android 承载的就绪/停机/启动失败三条判据分别为
+          `DedicatedServer.java:246` / `MinecraftServer.java:650`（`Stopping server`）/
+          `Main.java:227`（`Failed to start the minecraft server`）；
+          `runMain` 改为 **unawaited**（只记返回值，不驱动状态）。契约测试已覆盖。
+        - 起服等待口径不变：`start()` 返回 ≠ 就绪，就绪仍由日志行异步驱动（与桌面承载一致）。
+  - [ ] **进程内拿不到真实退出码** ⇒ 优雅停机回传 `0`（等价值）
+        - spec「输出与退出码经承载层回传」在进程内**退化为**：以原版停机行作为停机确认，
+          `exitCode` 回传 0；JVM 随宿主进程存亡，不会单独退出，故无 OS 退出码可采。
+  - [x] **宿主存活机制：拦下被托管 JVM 的 `exit()`**（承载方式，非债；2026-10-18 真机已验证）
+        - 根因（javap 实证 `paper-26.2.jar` 的
+          `net.minecraft.server.dedicated.DedicatedServer.onServerExit()`）：
+          **被托管服务端自己**显式 `System.exit(this.abnormalExit ? 70 : 0)`，经 HotSpot
+          `vm_exit()` → libc `exit()` 退出整个进程。子进程承载下无所谓（服务端本就是那个
+          进程）；**进程内**承载下那等于把宿主应用一起杀掉（真机实测：`stopped`/退出码 0
+          之后打出 atexit 探针，随即 `Lost connection to device`）。
+        - 处置：在 libjvm.so 上**手写 GOT patch**——解析 `PT_DYNAMIC` → `DT_RELA` /
+          `DT_JMPREL` → 命中符号名 `exit` 的重定位 → 覆盖槽位指向 `mc_guarded_exit`
+          （拦到后**永久挂起该线程**：既不真退出，也不返回进 VM 的关闭路径）。
+          只改 libjvm 的重定位、**不碰 libc**，故宿主自身退出（ART 侧 / 系统强停）不受影响；
+          也**不引入**第三方 hook 库（用户裁决：不走 bytehook 路线）。
+        - 另有一条**不充分**的尝试已回退不必留：单纯在 VM 内保留非守护线程（`java.util.Timer`）
+          拦不住——因为这不是"非守护线程跑完了"的自然退出，而是**显式调用**。
+        - 代价：停服后 JVM 存活但空闲（`exit` 被拦在 VM 关闭尾部），配合"一进程一台 VM"
+          仍无法二次起服（见上条）。
+        - 真机证据（2026-10-18，MIUI/Android 13）：`已改写 exit 重定位槽位 0x6f74311f20
+          （库内 vaddr 0x1265f20）` → `已拦下 libjvm 的 exit()（1 处重定位）`；停服走完
+          `starting → ready → stopping → stopped`（退出码 0）后打出 `拦下被托管 JVM 的
+          exit(0)：宿主应用必须存活，永久挂起本线程`，此后 `adb shell pidof
+          com.qshh.flutter_mc` 仍返回同一宿主 pid（12237）——应用存活，不再 `Lost connection`。
+        - 实现坑：Android bionic 的内存 `.dynamic` 中 `d_ptr` 不保证已重定位为绝对地址
+          （实测 `DT_RELA = 0x55f8`），按指针直接用必 SIGSEGV；改为解析**磁盘 ELF 文件**
+          + PT_LOAD 换算 vaddr→file offset 后解决。
+  - [x] **已知非致命：OSHI/JNA 在 Android 上加载失败**（`libc.so.6` 找不到）
+        —— Paper 用 `ignoreErrors` 包裹，仅"硬件信息"缺失（TPS/CPU/内存上报），不影响起服。
+        登记即可，**不修**。
+
+---
+
 ## 命名 / 路径偏离（非"债"，是纪律偏离，需逐步改正）
 
 - [x] ~~`LivingEntity` + `Player` → `player_controller.dart`~~（2026-10-07 已还债：拆为

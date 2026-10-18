@@ -13,6 +13,7 @@ import 'screens/multiplayer/join_multiplayer_screen.dart';
 import 'screens/multiplayer/local_server_screen.dart';
 import 'screens/multiplayer/manage_server_screen.dart';
 import 'screens/options/video_settings_screen.dart';
+import 'screens/local_server_jvm_selftest_screen.dart';
 import 'screens/title_screen.dart';
 import 'screens/worldselection/select_world_screen.dart';
 
@@ -58,6 +59,8 @@ final Map<String, WidgetBuilder> mcRoutes = {
   '/multiplayer': (context) => const JoinMultiplayerScreen(),
   '/settings/video': (context) => const VideoSettingsScreen(),
   '/autojoin': (context) => const _AutoJoinScreen(),
+  // 宿主承载层真机取证（`--dart-define=MC_JVM_SELFTEST=1`），与 /autojoin 同性质。
+  '/jvm-selftest': (context) => const LocalServerJvmSelfTestScreen(),
 };
 
 /// 自动进服（`--dart-define=AUTOJOIN=<ip:port>`，取证脚本用）。

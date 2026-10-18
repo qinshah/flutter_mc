@@ -13,7 +13,7 @@ import 'package:mc_session/mc_session.dart';
 import 'package:mc_ui/mc_ui.dart';
 
 import '../../platform/server_host/artifact_resolver.dart';
-import '../../platform/server_host/dedicated_server_process.dart';
+import '../../platform/server_host/dedicated_server_carrier.dart';
 import '../../platform/server_host/eula_gate.dart';
 import '../../platform/server_host/instance_directory.dart';
 import '../../platform/server_host/local_server_config.dart';
@@ -61,7 +61,8 @@ class _LocalServerScreenState extends State<LocalServerScreen> {
   bool _busy = false;
   final TextEditingController _command = TextEditingController();
 
-  DedicatedServerProcess get _process =>
+  /// 承载句柄（按平台选实现，见 `local_server_host.dart` 的装配点）。
+  DedicatedServerCarrier get _process =>
       widget.manager.processFor(widget.config);
 
   InstanceDirectory get _dir =>
@@ -602,7 +603,7 @@ class _LocalServerScreenState extends State<LocalServerScreen> {
     final tail = _process.recentLogs.reversed.take(80).toList();
     for (final line in tail) {
       if (line.contains('Address already in use') ||
-          line.contains(DedicatedServerProcess.bindFailedMarker)) {
+          line.contains(DedicatedServerCarrier.bindFailedMarker)) {
         return '端口被占用（java.net.BindException: Address already in use）'
             '——请改端口或先停掉占用者';
       }

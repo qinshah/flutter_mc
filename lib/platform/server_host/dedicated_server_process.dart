@@ -19,13 +19,19 @@ import 'dart:io';
 import 'package:mc_server/mc_server.dart';
 
 import 'artifact_resolver.dart';
+import 'dedicated_server_carrier.dart';
 import 'instance_directory.dart';
 import 'local_server_config.dart';
 
-/// 宿主视角的服务端状态。
-enum ServerState { stopped, starting, ready, stopping, failed }
+// 承载接口与状态枚举的真身在 dedicated_server_carrier.dart；此处转出，使既有
+// `import 'dedicated_server_process.dart'` 的调用方照旧拿到 `ServerState`。
+export 'dedicated_server_carrier.dart' show DedicatedServerCarrier, ServerState;
 
-class DedicatedServerProcess {
+/// 桌面子进程承载：`Process.start(java, [...jvmArgs, '-jar', jar, '--nogui'])`。
+///
+/// 与 Android 的进程内 JVM 承载（`android_embedded_jvm_host.dart`）共用
+/// [DedicatedServerCarrier] 这条契约面（spec「与桌面承载层共享同一契约面」）。
+class DedicatedServerProcess implements DedicatedServerCarrier {
   DedicatedServerProcess({
     required this.config,
     required this.instanceDirectory,
@@ -35,15 +41,14 @@ class DedicatedServerProcess {
   final InstanceDirectory instanceDirectory;
 
   /// 就绪行（判据 `DedicatedServer.java:246`）：`Done (<耗时>)! For help, type "help"`。
-  static final RegExp readyLine =
-      RegExp(r'Done \(.+\)! For help, type "help"');
+  /// 真身在 [DedicatedServerCarrier]（两块承载共用一份）。
+  static final RegExp readyLine = DedicatedServerCarrier.readyLine;
 
   /// 绑定失败标记（判据 `DedicatedServer.java:215`）。
-  static const String bindFailedMarker = '**** FAILED TO BIND TO PORT!';
+  static const String bindFailedMarker = DedicatedServerCarrier.bindFailedMarker;
 
   /// 监听端口日志行（判据 `DedicatedServer.java:210`），用于回显**实际**监听端口。
-  static final RegExp listeningLine =
-      RegExp(r'Starting Minecraft server on .*:(\d+)');
+  static final RegExp listeningLine = DedicatedServerCarrier.listeningLine;
 
   Process? _process;
   ServerState _state = ServerState.stopped;
@@ -60,21 +65,30 @@ class DedicatedServerProcess {
       StreamController<String>.broadcast();
   IOSink? _consoleSink;
 
+  @override
   ServerState get state => _state;
+  @override
   int? get exitCode => _exitCode;
+  @override
   bool get bindFailed => _bindFailed;
+  @override
   bool get isRunning => _state == ServerState.starting || _state == ServerState.ready;
 
   /// 最近日志（供 UI 面板初次渲染）。
+  @override
   List<String> get recentLogs => List<String>.unmodifiable(_recent);
 
+  @override
   Stream<ServerState> get stateChanges => _stateController.stream;
+  @override
   Stream<String> get logLines => _logController.stream;
 
   /// 实际监听端口：以原版日志行为准（`DedicatedServer.java:210`）；未就绪时为 null。
+  @override
   int? get listeningPort => _actualPort;
   int? _actualPort;
 
+  @override
   Future<void> start(ServerArtifacts artifacts) async {
     if (_process != null) return;
     _state = ServerState.starting;
@@ -148,6 +162,7 @@ class DedicatedServerProcess {
   }
 
   /// 优雅停止：经 RCON 下发 `stop` → 等待退出 → 超时上限后才强杀（design D10）。
+  @override
   Future<void> stop() async {
     final process = _process;
     if (process == null) return;
@@ -166,6 +181,7 @@ class DedicatedServerProcess {
   }
 
   /// 回收孤儿：应用退出/宿主重载时若进程仍存活则强杀（spec「MUST NOT 残留孤儿进程」）。
+  @override
   void reap() {
     _process?.kill(ProcessSignal.sigkill);
   }
@@ -198,6 +214,7 @@ class DedicatedServerProcess {
     if (!_stateController.isClosed) _stateController.add(_state);
   }
 
+  @override
   Future<void> dispose() async {
     _consoleSink?.close();
     await _stateController.close();

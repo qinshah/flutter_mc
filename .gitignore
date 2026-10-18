@@ -59,12 +59,15 @@ app.*.map.json
 #       mc-sources/minecraft-common-<版本>-sources/（当前为 26.3）
 #       只读参考，禁止修改其内容、禁止入库；获取与放置见 CONTRIBUTING.md
 #   flutter_scene/ —— flutter_scene 仓库本地副本（引擎源码/示例）
+#   fcl-sources/   —— FoldCraftLauncher（FCL）源码本地副本：Android 端"承载外部 JVM 与
+#       被托管 Java 产物"的承载方式参考（第三类自由设计），非原版判据；只读、不入库
 # 末条 minecraft-*/ 是防御网：万一有人又把参考源码 clone 到仓库根，它不会污染 git status，
 # 由 tools/check_repo_hygiene.py 的「迁移未完成」检查负责提醒归位。
 /mc-sources/
-minecraft-*/
 /dashcraft/
 /flutter_scene/
+/fcl-sources/
+minecraft-*/
 test_fixtures/
 # F-35 原版材质导入产物（版权：原版贴图不入库，本地生成）：
 /assets/textures/vanilla/*
@@ -110,6 +113,15 @@ dist/
 # 版本目录下只保留 .gitkeep（pubspec 逐目录声明要求目录存在），jar 与其余产物一律忽略。
 /assets/server/*/*
 !/assets/server/*/.gitkeep
+
+# Android 端 JRE 产物（OpenJDK GPLv2+CE：不入库，只占位；见
+# android/app/src/main/cpp/third_party/NOTICE.md 的来源与许可登记）。
+# 解包与安装逻辑见 android/app/src/main/kotlin/com/qshh/flutter_mc/JvmHost.kt。
+/android/app/src/main/assets/jre/**/*
+!/android/app/src/main/assets/jre/.gitkeep
+
+# Android native（CMake）构建中间产物
+/android/app/.cxx/
 
 # Dart 包构建产物（注意：上面第 33 行的 `/build/` 带前导斜杠，只匹配仓库根，
 # 匹配不到 monorepo 里每个子包各自生成的 build/；此处显式补上）

@@ -81,9 +81,12 @@ class _FlutterMcAppState extends State<FlutterMcApp> {
       title: 'flutter_mc',
       debugShowCheckedModeBanner: false,
       // AUTOJOIN 取证：启动直达自动进服屏（routes.dart 的 _AutoJoinScreen）。
+      // JVM-SELFTEST 取证：启动直达宿主承载层自检屏（routes.dart 的 /jvm-selftest）。
       initialRoute: const String.fromEnvironment('AUTOJOIN').isNotEmpty
           ? '/autojoin'
-          : '/',
+          : (const String.fromEnvironment('MC_JVM_SELFTEST').isNotEmpty
+              ? '/jvm-selftest'
+              : '/'),
       routes: mcRoutes,
       onGenerateRoute: mcOnGenerateRoute,
     );

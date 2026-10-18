@@ -27,7 +27,7 @@ void main() {
 
   test('起服 → 就绪 → RCON 指令回显 → 优雅停止 → 端口释放', () async {
     final tmp = Directory.systemTemp.createTempSync('local_server_e2e');
-    DedicatedServerProcess? process;
+    DedicatedServerCarrier? process;
     try {
       final hostRoot = Directory('${tmp.path}/host');
       final manager = LocalServerManager(hostRoot);
@@ -153,7 +153,7 @@ void main() {
   //   —— 上一条用例设了 jarPath 并复制对照产物，绕过了资产分支，故它绿≠运行时能用。
   test('资产路径：不设 jarPath、不预置依赖，也能起服到就绪', () async {
     final tmp = Directory.systemTemp.createTempSync('local_server_asset_e2e');
-    DedicatedServerProcess? process;
+    DedicatedServerCarrier? process;
     try {
       // 资产源文件（未入库，不存在则跳过本用例）。
       final assetDir = Directory('assets/server/26_2');
